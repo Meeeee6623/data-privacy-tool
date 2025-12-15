@@ -53,15 +53,6 @@ python -m privacy_pipeline.cli submit-gemini gemini_batches \
 python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
   --original-index image_index.jsonl --scene-level 2 \
   --final-output gemini_output.jsonl
-
-# 6) Build HTML viewers
-# YOLOE viewer (optionally expand scenes using the original index)
-python -m privacy_pipeline.cli visualize-yoloe yoloe_output.jsonl \
-  --scene-level 2 --index-jsonl image_index.jsonl --output-dir viewers/yoloe
-
-# Gemini OCR viewer (scenes only, can source scene images from the index or YOLOE output)
-python -m privacy_pipeline.cli visualize-gemini gemini_output.jsonl \
-  --scene-level 2 --index-jsonl image_index.jsonl --output-dir viewers/gemini
 ```
 
 Notes:
@@ -73,10 +64,3 @@ Notes:
 - When Gemini is triggered by any image in a scene, **all images in that scene**
   are sent for OCR/classification.
 - `--max-bytes` can be adjusted if GCP batch limits change (default 1.85 GB).
-- YOLOE viewer: supports grouping by scene, filtering by class/confidence/any
-  custom attributes, and toggling visualization vs. raw images. Click through a
-  thumbnail to view every frame from that scene. Grid and page sizes are
-  adjustable in the UI.
-- Gemini OCR viewer: grids are scene-based with filters for categories and
-  custom attributes. You can toggle OCR previews under thumbnails and click a
-  scene to see every frame alongside the OCR text and detected categories.

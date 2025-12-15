@@ -12,7 +12,6 @@ from privacy_pipeline.gemini_pipeline import (
     parse_gemini_output,
     submit_gemini_batches,
 )
-from privacy_pipeline.visualization import generate_gemini_viewer, generate_yoloe_viewer
 
 
 def _add_common_index_args(parser: argparse.ArgumentParser) -> None:
@@ -102,21 +101,6 @@ def main():
     parse_parser.add_argument("--scene-level", type=int, default=1)
     parse_parser.add_argument("--final-output", type=Path, default=Path("gemini_output.jsonl"))
 
-    yolo_viz_parser = subparsers.add_parser("visualize-yoloe", help="Build a YOLOE HTML viewer")
-    yolo_viz_parser.add_argument("yolo_output", type=Path)
-    yolo_viz_parser.add_argument("--output-dir", type=Path, default=Path("yoloe_viewer"))
-    yolo_viz_parser.add_argument("--scene-level", type=int, default=1)
-    yolo_viz_parser.add_argument("--index-jsonl", type=Path, help="Optional full index JSONL for scene expansion")
-    yolo_viz_parser.add_argument("--title", type=str, default="YOLOE Viewer")
-
-    gemini_viz_parser = subparsers.add_parser("visualize-gemini", help="Build a Gemini OCR HTML viewer")
-    gemini_viz_parser.add_argument("gemini_output", type=Path)
-    gemini_viz_parser.add_argument("--output-dir", type=Path, default=Path("gemini_viewer"))
-    gemini_viz_parser.add_argument("--scene-level", type=int, default=1)
-    gemini_viz_parser.add_argument("--index-jsonl", type=Path, help="Optional full index JSONL for scene expansion")
-    gemini_viz_parser.add_argument("--yolo-jsonl", type=Path, help="Optional YOLOE JSONL for scene expansion")
-    gemini_viz_parser.add_argument("--title", type=str, default="Gemini OCR Viewer")
-
     args = parser.parse_args()
 
     if args.command == "index":
@@ -192,27 +176,6 @@ def main():
         )
         output = parse_gemini_output(args.outputs, args.original_index, config)
         print(f"Wrote parsed Gemini output to {output}")
-
-    elif args.command == "visualize-yoloe":
-        output = generate_yoloe_viewer(
-            yolo_output=args.yolo_output,
-            output_dir=args.output_dir,
-            scene_level=args.scene_level,
-            index_jsonl=args.index_jsonl,
-            title=args.title,
-        )
-        print(f"Wrote YOLOE viewer to {output}")
-
-    elif args.command == "visualize-gemini":
-        output = generate_gemini_viewer(
-            gemini_output=args.gemini_output,
-            output_dir=args.output_dir,
-            scene_level=args.scene_level,
-            index_jsonl=args.index_jsonl,
-            yolo_output=args.yolo_jsonl,
-            title=args.title,
-        )
-        print(f"Wrote Gemini viewer to {output}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+barcode
+shipping label
+QR code
+sign
+room sign
+handwritten text
+printed text
+whiteboard
+calendar
+person
+cardboard box
+painting
+poster
+portrait
+drawing
+photograph

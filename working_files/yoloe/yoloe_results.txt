@@ -1,0 +1,3 @@
+Shipping Label
+/usr/project/xtmp/bsc32/droid/AUTOLab/Autolab/2497599769/Fri_Nov_24_15:43:54_2023/18026681/000012.png
+misppredicts as "calendar" with high confidence: /usr/project/xtmp/bsc32/droid_yoloe/AUTOLab/Autolab/2497599769/Fri_Nov_24_16:31:54_2023/18026681/000008.png

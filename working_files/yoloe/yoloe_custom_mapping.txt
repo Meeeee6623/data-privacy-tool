@@ -1,0 +1,16 @@
+0: barcode
+1: shipping label
+2: QR code
+3: sign
+4: room sign
+5: handwritten text
+6: printed text
+7: whiteboard
+8: calendar
+9: person
+10: cardboard box
+11: painting
+12: poster
+13: portrait
+14: drawing
+15: photograph

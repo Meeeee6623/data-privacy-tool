@@ -18,7 +18,7 @@ from privacy_pipeline.gemini_pipeline import (
 def _add_common_index_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("image_root", type=Path, help="Root directory containing images")
     parser.add_argument("--output", type=Path, default=Path("image_index.jsonl"))
-    parser.add_argument("--recursive", action="store_true", help="Search recursively for images")
+    parser.add_argument("--recursive", default=True, action="store_true", help="Search recursively for images")
     parser.add_argument(
         "--path-attributes",
         nargs="*",

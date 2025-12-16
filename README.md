@@ -34,9 +34,9 @@ python -m privacy_pipeline.cli index /path/to/images \
   --path-attributes lab building scene \
   --path-attribute-map lab:3 building:2 scene:1
 
-# 2) Run YOLOE
-python -m privacy_pipeline.cli yoloe path/to/model.pt image_index.jsonl \
-  --classes yoloe_classes.txt --threshold 0.5 --visualize --viz-dir yoloe_viz \
+# 2) Run YOLOE (uses yoloe-11l-seg.pt and packaged classes by default)
+python -m privacy_pipeline.cli yoloe image_index.jsonl \
+  --threshold 0.5 --visualize --viz-dir yoloe_viz \
   --output yoloe_output.jsonl
 
 # 3) Prepare Gemini batches
@@ -54,6 +54,11 @@ python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
   --original-index image_index.jsonl --scene-level 2 \
   --final-output gemini_output.jsonl
 ```
+
+The YOLOE runner automatically downloads the requested checkpoint (defaulting to
+`yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`
+to match `yoloe_test.ipynb`, saves the customized weights alongside the original
+model file, and writes a `yoloe_custom_mapping.txt` next to the YOLOE output.
 
 Notes:
 - `--scene-level` controls how far up the directory tree to group images into a

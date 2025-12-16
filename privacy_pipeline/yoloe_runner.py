@@ -4,18 +4,45 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from PIL import Image
-from ultralytics import YOLO
+from ultralytics import YOLOE
 
 from privacy_pipeline.config import YoloEConfig
 
 logger = logging.getLogger(__name__)
 
 
-def _load_classes(classes_file: Optional[Path]) -> Optional[List[str]]:
-    if not classes_file:
-        return None
-    with classes_file.open() as f:
-        return [line.strip() for line in f if line.strip()]
+def _load_classes(classes_path: Path) -> List[str]:
+    classes = [line.strip() for line in classes_path.read_text().splitlines() if line.strip()]
+    if not classes:
+        raise ValueError(f"No classes found in {classes_path}")
+    logger.debug("Loaded %d classes from %s", len(classes), classes_path)
+    return classes
+
+
+def _save_class_mapping(output_dir: Path, classes: List[str]) -> Path:
+    mapping_path = output_dir / "yoloe_custom_mapping.txt"
+    with mapping_path.open("w") as f:
+        for idx, name in enumerate(classes):
+            f.write(f"{name}: {idx}\n")
+    logger.debug("Saved class mapping to %s", mapping_path)
+    return mapping_path
+
+
+def _load_custom_model(model_path: Path, classes_path: Path, output_dir: Path):
+    classes = _load_classes(classes_path)
+    model = YOLOE(str(model_path))
+    logger.debug("Loaded YOLOE model from %s", model_path)
+
+    model.set_classes(classes, model.get_text_pe(classes))
+    logger.info("Configured YOLOE model with %d custom classes", len(classes))
+
+    custom_model_path = model_path.with_name(f"{model_path.stem}-custom{model_path.suffix}")
+    custom_model_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(custom_model_path)
+    logger.info("Saved customized YOLOE model to %s", custom_model_path)
+
+    mapping_path = _save_class_mapping(output_dir, classes)
+    return model, custom_model_path, mapping_path
 
 
 def _load_index(jsonl_path: Path) -> Iterable[Dict]:
@@ -27,19 +54,18 @@ def _load_index(jsonl_path: Path) -> Iterable[Dict]:
             yield json.loads(line)
 
 
-def _should_keep_detection(name: str, allowed_classes: Optional[List[str]]) -> bool:
-    if not allowed_classes:
-        return True
-    return name in allowed_classes
-
-
 def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
     logger.info("Running YOLOE on index %s", index_jsonl)
-    classes = _load_classes(config.classes_file)
-    if classes:
-        logger.debug("Restricting detections to classes: %s", classes)
-    model = YOLO(str(config.model_path))
-    logger.debug("Loaded YOLO model from %s", config.model_path)
+    config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+
+    model, custom_model_path, mapping_path = _load_custom_model(
+        config.model_path, config.classes_path, config.output_jsonl.parent
+    )
+    logger.info(
+        "Model ready. Custom weights: %s. Class mapping: %s",
+        custom_model_path,
+        mapping_path,
+    )
 
     records: List[Dict] = []
     viz_dir: Optional[Path] = None
@@ -54,8 +80,6 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
         detections = []
         for box, cls_idx, conf in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist(), result.boxes.conf.tolist()):
             name = result.names[int(cls_idx)]
-            if not _should_keep_detection(name, classes):
-                continue
             detections.append(
                 {
                     "class": name,

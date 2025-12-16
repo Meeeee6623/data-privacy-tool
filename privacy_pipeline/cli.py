@@ -50,9 +50,14 @@ def _parse_attribute_map(raw: list[str] | None) -> dict[str, int] | None:
 
 
 def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("model", type=Path, help="Path to YOLOE model")
+    parser.add_argument(
+        "model",
+        type=Path,
+        nargs="?",
+        default=Path("yoloe-11l-seg.pt"),
+        help="Path to YOLOE model (defaults to yoloe-11l-seg.pt)",
+    )
     parser.add_argument("index", type=Path, help="Input image index JSONL")
-    parser.add_argument("--classes", type=Path, help="Classes txt file")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--output", type=Path, default=Path("yoloe_output.jsonl"))
     parser.add_argument("--visualize", action="store_true")
@@ -150,7 +155,6 @@ def main():
     elif args.command == "yoloe":
         config = YoloEConfig(
             model_path=args.model,
-            classes_file=args.classes,
             threshold=args.threshold,
             visualize=args.visualize,
             visualization_dir=args.viz_dir,

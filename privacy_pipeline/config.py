@@ -20,8 +20,8 @@ class DatasetConfig:
 class YoloEConfig:
     """Configuration for running YOLOE inference."""
 
-    model_path: Path
-    classes_file: Optional[Path] = None
+    model_path: Path = Path("yoloe-11l-seg.pt")
+    classes_path: Path = Path(__file__).resolve().parent / "yoloe_classes.txt"
     threshold: float = 0.5
     visualize: bool = False
     visualization_dir: Optional[Path] = None

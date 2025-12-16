@@ -144,7 +144,7 @@ def main():
             user_jsonl=args.user_jsonl,
             output_jsonl=args.output,
         )
-        output = build_image_index(config)
+        output = build_image_index(config, verbose=args.verbose)
         print(f"Wrote image index to {output}")
 
     elif args.command == "yoloe":
@@ -156,7 +156,7 @@ def main():
             visualization_dir=args.viz_dir,
             output_jsonl=args.output,
         )
-        output = run_yoloe(args.index, config)
+        output = run_yoloe(args.index, config, verbose=args.verbose)
         print(f"Wrote YOLOE output to {output}")
 
     elif args.command == "prepare-gemini":
@@ -174,8 +174,8 @@ def main():
             model=args.model,
             final_output_jsonl=args.final_output,
         )
-        flagged = collect_flagged_scenes(args.yolo_output, config)
-        batch_files = create_gemini_batches(flagged, config)
+        flagged = collect_flagged_scenes(args.yolo_output, config, verbose=args.verbose)
+        batch_files = create_gemini_batches(flagged, config, verbose=args.verbose)
         print(json.dumps({"flagged_scenes": len(flagged), "batch_files": [str(p) for p in batch_files]}, indent=2))
 
     elif args.command == "submit-gemini":
@@ -193,7 +193,7 @@ def main():
             max_batch_size_bytes=1.0,
             output_batch_dir=args.batch_dir,
         )
-        job_names = submit_gemini_batches(batch_files, config)
+        job_names = submit_gemini_batches(batch_files, config, verbose=args.verbose)
         print(json.dumps({"submitted_jobs": job_names}, indent=2))
 
     elif args.command == "parse-gemini":
@@ -206,7 +206,7 @@ def main():
             max_batch_size_bytes=1.0,
             output_batch_dir=Path(),
         )
-        output = parse_gemini_output(args.outputs, args.original_index, config)
+        output = parse_gemini_output(args.outputs, args.original_index, config, verbose=args.verbose)
         print(f"Wrote parsed Gemini output to {output}")
 
 

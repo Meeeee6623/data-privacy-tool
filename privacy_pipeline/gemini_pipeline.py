@@ -9,6 +9,7 @@ from google import genai
 from google.cloud import storage
 
 from privacy_pipeline.config import GeminiConfig
+from privacy_pipeline.progress import progress
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,18 @@ def _scene_root(image_path: Path, levels_up: int) -> Path:
     return current
 
 
-def collect_flagged_scenes(yolo_output: Path, config: GeminiConfig) -> Dict[Path, List[str]]:
+def collect_flagged_scenes(
+    yolo_output: Path, config: GeminiConfig, verbose: bool = False
+) -> Dict[Path, List[str]]:
     all_images: Dict[Path, List[str]] = defaultdict(list)
     flagged_scenes: set[Path] = set()
 
-    for record in _load_yolo_output(yolo_output):
+    for record in progress(
+        _load_yolo_output(yolo_output),
+        verbose,
+        "Scanning detections",
+        unit="image",
+    ):
         image_path = Path(record["image_path"])
         scene_path = _scene_root(image_path, config.scene_directory_level)
         all_images[scene_path].append(str(image_path))
@@ -74,13 +82,23 @@ def _build_record(scene: Path, images: List[str], prompt: str) -> str:
     return json.dumps(record)
 
 
-def create_gemini_batches(flagged_scenes: Dict[Path, List[str]], config: GeminiConfig) -> List[Path]:
+def create_gemini_batches(
+    flagged_scenes: Dict[Path, List[str]], config: GeminiConfig, verbose: bool = False
+) -> List[Path]:
     config.output_batch_dir.mkdir(parents=True, exist_ok=True)
     batch_files: List[Path] = []
     current_records: List[str] = []
     current_size = 0
 
-    for idx, (scene, images) in enumerate(flagged_scenes.items()):
+    for idx, (scene, images) in enumerate(
+        progress(
+            flagged_scenes.items(),
+            verbose,
+            "Building Gemini batches",
+            total=len(flagged_scenes),
+            unit="scene",
+        )
+    ):
         record = _build_record(scene, images, config.prompt)
         record_size = len(record) + 1
         would_exceed = current_size + record_size > config.max_batch_size_bytes
@@ -105,7 +123,9 @@ def create_gemini_batches(flagged_scenes: Dict[Path, List[str]], config: GeminiC
     return batch_files
 
 
-def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List[str]:
+def submit_gemini_batches(
+    batch_files: List[Path], config: GeminiConfig, verbose: bool = False
+) -> List[str]:
     if not config.gcs_bucket:
         raise ValueError("gcs_bucket must be set on GeminiConfig to submit jobs")
 
@@ -115,7 +135,13 @@ def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List
     client = genai.Client(vertexai=True, project=config.project, location=config.location)
 
     job_names: List[str] = []
-    for batch_file in batch_files:
+    for batch_file in progress(
+        batch_files,
+        verbose,
+        "Submitting Gemini batches",
+        total=len(batch_files),
+        unit="batch",
+    ):
         blob = bucket.blob(batch_file.name)
         blob.upload_from_filename(str(batch_file))
         blob_uri = f"gs://{bucket.name}/{blob.name}"
@@ -133,12 +159,20 @@ def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List
     return job_names
 
 
-def download_completed_jobs(job_names: List[str], destination_dir: Path, config: GeminiConfig) -> List[Path]:
+def download_completed_jobs(
+    job_names: List[str], destination_dir: Path, config: GeminiConfig, verbose: bool = False
+) -> List[Path]:
     destination_dir.mkdir(parents=True, exist_ok=True)
     client = genai.Client(vertexai=True, project=config.project, location=config.location)
 
     downloaded: List[Path] = []
-    for job_name in job_names:
+    for job_name in progress(
+        job_names,
+        verbose,
+        "Downloading completed jobs",
+        total=len(job_names),
+        unit="job",
+    ):
         job = client.batches.get(name=job_name)
         if not job.output_output_gcs_uri:
             continue
@@ -155,15 +189,33 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
     return downloaded
 
 
-def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config: GeminiConfig) -> Path:
+def parse_gemini_output(
+    batch_outputs: List[Path], original_index: Path, config: GeminiConfig, verbose: bool = False
+) -> Path:
     scene_to_attributes: Dict[str, Dict] = {}
-    for record in _load_yolo_output(original_index):
+    for record in progress(
+        _load_yolo_output(original_index),
+        verbose,
+        "Indexing scenes",
+        unit="image",
+    ):
         scene_path = str(_scene_root(Path(record["image_path"]), config.scene_directory_level))
         scene_to_attributes.setdefault(scene_path, record.get("attributes", {}))
 
     parsed: List[Dict] = []
-    for batch_output in batch_outputs:
-        for record in _load_yolo_output(batch_output):
+    for batch_output in progress(
+        batch_outputs,
+        verbose,
+        "Parsing Gemini outputs",
+        total=len(batch_outputs),
+        unit="file",
+    ):
+        for record in progress(
+            _load_yolo_output(batch_output),
+            verbose,
+            "Reading batch records",
+            unit="record",
+        ):
             key = record.get("key")
             result = record.get("result", {})
             contents = result.get("contents", []) if isinstance(result, dict) else []

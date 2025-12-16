@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from privacy_pipeline.config import DatasetConfig
+from privacy_pipeline.progress import progress
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +58,12 @@ def _load_user_jsonl(user_jsonl: Path) -> Iterable[Dict]:
             yield json.loads(line)
 
 
-def build_image_index(config: DatasetConfig) -> Path:
+def build_image_index(config: DatasetConfig, verbose: bool = False) -> Path:
     logger.info("Building image index from %s", config.image_root)
     images = _gather_images(config)
     records: List[Dict] = []
 
-    for image_path in images:
+    for image_path in progress(images, verbose, "Indexing images", total=len(images), unit="image"):
         base_record = {
             "image_path": str(image_path),
             "attributes": _attributes_from_path(image_path, config),

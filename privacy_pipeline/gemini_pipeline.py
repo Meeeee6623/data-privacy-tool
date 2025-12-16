@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -9,8 +10,11 @@ from google.cloud import storage
 
 from privacy_pipeline.config import GeminiConfig
 
+logger = logging.getLogger(__name__)
+
 
 def _load_yolo_output(path: Path) -> Iterable[Dict]:
+    logger.debug("Loading YOLOE output from %s", path)
     with path.open() as f:
         for line in f:
             if not line.strip():
@@ -42,6 +46,7 @@ def collect_flagged_scenes(yolo_output: Path, config: GeminiConfig) -> Dict[Path
                 flagged_scenes.add(scene_path)
                 break
 
+    logger.info("Flagged %d scenes for Gemini processing", len(flagged_scenes))
     return {scene: sorted(all_images[scene]) for scene in flagged_scenes}
 
 
@@ -96,6 +101,7 @@ def create_gemini_batches(flagged_scenes: Dict[Path, List[str]], config: GeminiC
             f.write("\n".join(current_records) + "\n")
         batch_files.append(batch_path)
 
+    logger.info("Created %d Gemini batch files in %s", len(batch_files), config.output_batch_dir)
     return batch_files
 
 
@@ -120,8 +126,10 @@ def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List
             config={"display_name": batch_file.stem},
         )
         job_names.append(job.name)
+        logger.info("Submitted Gemini batch %s as job %s", batch_file.name, job.name)
 
     config.submitted_jobs_file.write_text(json.dumps(job_names, indent=2))
+    logger.info("Recorded %d submitted jobs to %s", len(job_names), config.submitted_jobs_file)
     return job_names
 
 
@@ -142,6 +150,8 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
             local_path = destination_dir / Path(blob.name).name
             blob.download_to_filename(local_path)
             downloaded.append(local_path)
+            logger.debug("Downloaded output blob %s to %s", blob.name, local_path)
+    logger.info("Downloaded %d completed job outputs to %s", len(downloaded), destination_dir)
     return downloaded
 
 
@@ -165,8 +175,11 @@ def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config:
                 }
             )
 
+    logger.info("Parsed %d Gemini batch outputs", len(parsed))
+
     config.final_output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     with config.final_output_jsonl.open("w") as f:
         for record in parsed:
             f.write(json.dumps(record) + "\n")
+    logger.info("Wrote parsed Gemini output to %s", config.final_output_jsonl)
     return config.final_output_jsonl

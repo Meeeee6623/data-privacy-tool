@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from privacy_pipeline.config import DatasetConfig, GeminiConfig, YoloEConfig
@@ -74,9 +75,37 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--final-output", type=Path, default=Path("gemini_output.jsonl"))
 
 
+def _configure_logging(verbose: bool) -> Path:
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "privacy_pipeline.log"
+
+    console_level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(),
+        ],
+    )
+    logging.getLogger().handlers[0].setLevel(logging.DEBUG)
+    logging.getLogger().handlers[1].setLevel(console_level)
+    logging.getLogger(__name__).debug(
+        "Logging configured. Verbose=%s. Log file: %s", verbose, log_file
+    )
+    return log_file
+
+
 def main():
     parser = argparse.ArgumentParser(description="Privacy screening pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging and debug print statements",
+    )
 
     index_parser = subparsers.add_parser("index", help="Build image index JSONL")
     _add_common_index_args(index_parser)
@@ -102,6 +131,9 @@ def main():
     parse_parser.add_argument("--final-output", type=Path, default=Path("gemini_output.jsonl"))
 
     args = parser.parse_args()
+
+    log_file = _configure_logging(args.verbose)
+    logging.getLogger(__name__).info("Logs will be written to %s", log_file)
 
     if args.command == "index":
         config = DatasetConfig(

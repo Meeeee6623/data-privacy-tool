@@ -46,11 +46,11 @@ else:
         os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
 
         if os.path.exists(local_file_path):
-            print(f"File {local_file_path} already exists. Skipping download.")
+            tqdm.write(f"File {local_file_path} already exists. Skipping download.")
             continue
 
         # Download the file
-        print(f"Downloading gs://{BUCKET_NAME}/{blob.name} to {local_file_path}...")
+        tqdm.write(f"Downloading gs://{BUCKET_NAME}/{blob.name} to {local_file_path}...")
         blob.download_to_filename(local_file_path)
 
     print("\nDownload complete.")

@@ -72,7 +72,7 @@ def cleanup_ocr_data(base_name=None):
                                 searchable_key = "/".join(path_segments[-4:-1])
                                 path_map[searchable_key].append(path_part + ".png")
         else:
-            print(f"Warning: Predictions file not found for group {base_name} at {predictions_txt_path}")
+            tqdm.write(f"Warning: Predictions file not found for group {base_name} at {predictions_txt_path}")
 
         with open(cleaned_output_path, 'wb') as cleaned_file:
             for input_file_path in tqdm(sorted(files), desc=f"Processing files for {base_name}"):
@@ -80,7 +80,10 @@ def cleanup_ocr_data(base_name=None):
                 output_jsonl_path = os.path.join(output_dir, file_name_no_ext, "predictions.jsonl")
 
                 if not os.path.exists(output_jsonl_path):
-                    print(f"Warning: Output file not found for {input_file_path}, skipping: {output_jsonl_path}")
+                    tqdm.write(
+                        f"Warning: Output file not found for {input_file_path}, "
+                        f"skipping: {output_jsonl_path}"
+                    )
                     continue
 
                 # Load all responses from the output file into a dictionary keyed by 'key'
@@ -101,7 +104,9 @@ def cleanup_ocr_data(base_name=None):
                                 responses[data.get('key')] = None
 
                         except (json.JSONDecodeError, orjson.JSONDecodeError):
-                            print(f"Skipping malformed line in {output_jsonl_path}: {line.strip()}")
+                            tqdm.write(
+                                f"Skipping malformed line in {output_jsonl_path}: {line.strip()}"
+                            )
                             continue
                 
                 # Iterate through the input file to match keys and write cleaned data
@@ -113,7 +118,9 @@ def cleanup_ocr_data(base_name=None):
                             if key in responses:
                                 # make sure file path is found
                                 if key not in path_map:
-                                    print(f"Warning: No file path found for key {key} in predictions.txt")
+                                    tqdm.write(
+                                        f"Warning: No file path found for key {key} in predictions.txt"
+                                    )
                                 cleaned_data = {
                                     "key": key,
                                     "text": responses[key],
@@ -121,7 +128,9 @@ def cleanup_ocr_data(base_name=None):
                                 }
                                 cleaned_file.write(dump_json_line(cleaned_data) + b'\n')
                         except (json.JSONDecodeError, orjson.JSONDecodeError):
-                            print(f"Skipping malformed line in {input_file_path}: {line.strip()}")
+                            tqdm.write(
+                                f"Skipping malformed line in {input_file_path}: {line.strip()}"
+                            )
                             continue
                             
     print(f"\nProcessing complete. Cleaned files are in {cleaned_dir}")

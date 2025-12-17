@@ -1,0 +1,16 @@
+barcode: 0
+shipping label: 1
+QR code: 2
+sign: 3
+room sign: 4
+handwritten text: 5
+printed text: 6
+whiteboard: 7
+calendar: 8
+person: 9
+cardboard box: 10
+painting: 11
+poster: 12
+portrait: 13
+drawing: 14
+photograph: 15

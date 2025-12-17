@@ -75,7 +75,7 @@ def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--output", type=Path, default=Path("yoloe_output.jsonl"))
     parser.add_argument("--visualize", action="store_true")
-    parser.add_argument("--viz-dir", type=Path, help="Directory for YOLOE visualizations")
+    parser.add_argument("--viz-dir", default=Path("yoloe_visualizations"), type=Path, help="Directory for YOLOE visualizations")
     parser.add_argument(
         "--attribute-filter",
         nargs="*",
@@ -85,7 +85,7 @@ def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("yolo_output", type=Path, help="YOLOE output JSONL")
+    parser.add_argument("--yolo_output", type=Path, help="YOLOE output JSONL", default=Path("yoloe_output.jsonl"))
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--classes", nargs="*", help="YOLOE classes that trigger Gemini")
     parser.add_argument("--threshold", type=float, default=0.5)

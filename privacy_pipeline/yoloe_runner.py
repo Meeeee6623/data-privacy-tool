@@ -88,61 +88,60 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
     if common_root is None and image_paths:
         common_root = Path(os.path.commonpath([str(p.parent) for p in image_paths]))
 
-    records: List[Dict] = []
     viz_dir: Optional[Path] = None
     if config.visualize:
         viz_dir = config.visualization_dir or config.output_jsonl.parent / "yoloe_visualizations"
         viz_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Saving YOLOE visualizations to %s", viz_dir)
 
-    for record in index_records:
-        image_path = Path(record["image_path"])
-        result = model.predict(str(image_path), conf=config.threshold, verbose=False)[0]
-        detections = []
-        for box, cls_idx, conf in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist(), result.boxes.conf.tolist()):
-            name = result.names[int(cls_idx)]
-            detections.append(
-                {
-                    "class": name,
-                    "confidence": float(conf),
-                    "bbox": [float(v) for v in box],
-                }
-            )
-        logger.debug(
-            "Processed %s with %d detections (threshold=%.2f)",
-            image_path,
-            len(detections),
-            config.threshold,
-        )
-
-        visualization_path = None
-        if viz_dir and detections:
-            plotted = result.plot()
-            relative_image = None
-            if common_root:
-                try:
-                    relative_image = image_path.relative_to(common_root)
-                except ValueError:
-                    logger.debug("Could not derive relative path for %s from %s", image_path, common_root)
-            relative_image = relative_image or Path(image_path.name)
-
-            viz_path = viz_dir / relative_image.with_name(f"{relative_image.stem}_yoloe.png")
-            viz_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(plotted[..., ::-1]).save(viz_path)
-            visualization_path = str(viz_path)
-
-        output_record = {
-            "image_path": str(image_path),
-            "attributes": record.get("attributes", {}),
-            "detections": detections,
-            "visualization_path": visualization_path,
-        }
-        records.append(output_record)
-
-    config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    processed = 0
     with config.output_jsonl.open("w") as f:
-        for record in records:
-            f.write(json.dumps(record) + "\n")
-    logger.info("Wrote YOLOE output for %d images to %s", len(records), config.output_jsonl)
+        for record in index_records:
+            image_path = Path(record["image_path"])
+            result = model.predict(str(image_path), conf=config.threshold, verbose=False)[0]
+            detections = []
+            for box, cls_idx, conf in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist(), result.boxes.conf.tolist()):
+                name = result.names[int(cls_idx)]
+                detections.append(
+                    {
+                        "class": name,
+                        "confidence": float(conf),
+                        "bbox": [float(v) for v in box],
+                    }
+                )
+            logger.debug(
+                "Processed %s with %d detections (threshold=%.2f)",
+                image_path,
+                len(detections),
+                config.threshold,
+            )
+
+            visualization_path = None
+            if viz_dir and detections:
+                plotted = result.plot()
+                relative_image = None
+                if common_root:
+                    try:
+                        relative_image = image_path.relative_to(common_root)
+                    except ValueError:
+                        logger.debug("Could not derive relative path for %s from %s", image_path, common_root)
+                relative_image = relative_image or Path(image_path.name)
+
+                viz_path = viz_dir / relative_image.with_name(f"{relative_image.stem}_yoloe.png")
+                viz_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(plotted[..., ::-1]).save(viz_path)
+                visualization_path = str(viz_path)
+
+            output_record = {
+                "image_path": str(image_path),
+                "attributes": record.get("attributes", {}),
+                "detections": detections,
+                "visualization_path": visualization_path,
+            }
+            f.write(json.dumps(output_record) + "\n")
+            f.flush()
+            processed += 1
+
+    logger.info("Wrote YOLOE output for %d images to %s", processed, config.output_jsonl)
 
     return config.output_jsonl

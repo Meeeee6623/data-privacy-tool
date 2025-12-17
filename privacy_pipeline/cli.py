@@ -14,6 +14,7 @@ from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
     collect_flagged_scenes,
     create_gemini_batches,
+    get_gemini_job_status,
     parse_gemini_output,
     submit_gemini_batches,
 )
@@ -446,6 +447,12 @@ def main():
     submit_parser.add_argument("--location")
     submit_parser.add_argument("--model")
 
+    check_parser = subparsers.add_parser("check-gemini", help="Check status of submitted Gemini batches")
+    check_parser.add_argument("job_names", nargs="*", help="Optional Gemini batch job names")
+    check_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
+    check_parser.add_argument("--project")
+    check_parser.add_argument("--location")
+
     parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
     parse_parser.add_argument("outputs", nargs="+", type=Path)
     parse_parser.add_argument("--original-index", type=Path)
@@ -528,6 +535,20 @@ def main():
         config = _build_gemini_config(args, config_data, require_prompt=False)
         job_names = submit_gemini_batches(batch_files, config)
         print(json.dumps({"submitted_jobs": job_names}, indent=2))
+
+    elif args.command == "check-gemini":
+        config = _build_gemini_config(args, config_data, require_prompt=False)
+        job_names = args.job_names or []
+        if not job_names:
+            jobs_file = config.submitted_jobs_file
+            if not jobs_file.exists():
+                raise ValueError("Job names must be provided via CLI or config file")
+            loaded_jobs = json.loads(jobs_file.read_text() or "[]")
+            if not isinstance(loaded_jobs, list):
+                raise ValueError("Jobs file must contain a JSON array of job names")
+            job_names = [str(job) for job in loaded_jobs if job]
+        statuses = get_gemini_job_status(job_names, config)
+        print(json.dumps({"jobs": statuses}, indent=2))
 
     elif args.command == "parse-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)

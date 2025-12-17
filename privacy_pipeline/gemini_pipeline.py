@@ -119,6 +119,9 @@ def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List
 
     storage_client = storage.Client()
     bucket = storage_client.bucket(config.gcs_bucket)
+    if not bucket.exists():
+        bucket = storage_client.create_bucket(bucket, location=config.location)
+        logger.info("Created GCS bucket %s in %s", bucket.name, config.location)
 
     client = genai.Client(vertexai=True, project=config.project, location=config.location)
 
@@ -139,6 +142,27 @@ def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List
     config.submitted_jobs_file.write_text(json.dumps(job_names, indent=2))
     logger.info("Recorded %d submitted jobs to %s", len(job_names), config.submitted_jobs_file)
     return job_names
+
+
+def get_gemini_job_status(job_names: List[str], config: GeminiConfig) -> List[Dict]:
+    if not job_names:
+        return []
+
+    client = genai.Client(vertexai=True, project=config.project, location=config.location)
+    statuses: List[Dict] = []
+    for job_name in job_names:
+        job = client.batches.get(name=job_name)
+        statuses.append(
+            {
+                "name": job.name,
+                "state": getattr(job, "state", None),
+                "display_name": getattr(job, "display_name", None),
+                "output_uri": getattr(job, "output_output_gcs_uri", None),
+                "error": getattr(job, "error", None),
+            }
+        )
+    logger.info("Retrieved status for %d Gemini jobs", len(statuses))
+    return statuses
 
 
 def download_completed_jobs(job_names: List[str], destination_dir: Path, config: GeminiConfig) -> List[Path]:

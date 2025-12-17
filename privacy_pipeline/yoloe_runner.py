@@ -131,15 +131,16 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
                 viz_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.fromarray(plotted[..., ::-1]).save(viz_path)
                 visualization_path = str(viz_path)
-
-            output_record = {
-                "image_path": str(image_path),
-                "attributes": record.get("attributes", {}),
-                "detections": detections,
-                "visualization_path": visualization_path,
-            }
-            f.write(json.dumps(output_record) + "\n")
-            f.flush()
+            
+            if detections:
+                output_record = {
+                    "image_path": str(image_path),
+                    "attributes": record.get("attributes", {}),
+                    "detections": detections,
+                    "visualization_path": visualization_path,
+                }
+                f.write(json.dumps(output_record) + "\n")
+                f.flush()
             processed += 1
 
     logger.info("Wrote YOLOE output for %d images to %s", processed, config.output_jsonl)

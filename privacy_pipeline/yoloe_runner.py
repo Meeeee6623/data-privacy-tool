@@ -84,7 +84,9 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
         logger.warning("No index records matched the provided attribute filters; nothing to process")
 
     image_paths = [Path(record["image_path"]) for record in index_records]
-    common_root = Path(os.path.commonpath([str(p.parent) for p in image_paths])) if image_paths else None
+    common_root = config.dataset_image_root
+    if common_root is None and image_paths:
+        common_root = Path(os.path.commonpath([str(p.parent) for p in image_paths]))
 
     records: List[Dict] = []
     viz_dir: Optional[Path] = None

@@ -27,6 +27,7 @@ class YoloEConfig:
     visualization_dir: Optional[Path] = None
     output_jsonl: Path = Path("yoloe_output.jsonl")
     attribute_filters: Optional[Dict[str, str]] = None
+    dataset_image_root: Optional[Path] = None
 
 
 @dataclass

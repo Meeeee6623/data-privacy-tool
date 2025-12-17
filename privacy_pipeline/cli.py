@@ -178,6 +178,9 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
         if args.attribute_filter is not None
         else yolo_cfg.get("attribute_filters")
     )
+    dataset_image_root = _resolve_path(
+        None, _lookup(config, "dataset", "image_root"), None
+    )
 
     return YoloEConfig(
         model_path=model_path,
@@ -186,6 +189,7 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
         visualization_dir=visualization_dir,
         output_jsonl=output_jsonl,
         attribute_filters=attribute_filters,
+        dataset_image_root=dataset_image_root,
     )
 
 

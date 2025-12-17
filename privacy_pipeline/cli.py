@@ -305,10 +305,11 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _configure_logging(verbose: bool) -> Path:
+def _configure_logging(verbose: bool, command: str) -> Path:
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "privacy_pipeline.log"
+    log_suffix = command.replace("-", "_") if command else "privacy_pipeline"
+    log_file = log_dir / f"{log_suffix}.log"
 
     console_level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -322,7 +323,10 @@ def _configure_logging(verbose: bool) -> Path:
     logging.getLogger().handlers[0].setLevel(logging.DEBUG)
     logging.getLogger().handlers[1].setLevel(console_level)
     logging.getLogger(__name__).debug(
-        "Logging configured. Verbose=%s. Log file: %s", verbose, log_file
+        "Logging configured. Verbose=%s. Command=%s. Log file: %s",
+        verbose,
+        command,
+        log_file,
     )
     return log_file
 
@@ -375,7 +379,7 @@ def main():
 
     config_data = _load_pipeline_config(args.config)
 
-    log_file = _configure_logging(args.verbose)
+    log_file = _configure_logging(args.verbose, args.command)
     logging.getLogger(__name__).info("Logs will be written to %s", log_file)
 
     if args.command == "index":

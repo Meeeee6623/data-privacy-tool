@@ -94,6 +94,45 @@ def _strip_inline_images(request: Dict | None) -> Dict | None:
     return cleaned
 
 
+def _extract_output_uri(job: object) -> Optional[str]:
+    """Extract an output URI from a job object with multiple possible shapes."""
+
+    def _get_attr(obj: object, name: str) -> Optional[str]:
+        value = getattr(obj, name, None)
+        return str(value) if value else None
+
+    for attr in ("output_gcs_uri", "output_output_gcs_uri", "output_dir", "output_uri"):
+        uri = _get_attr(job, attr)
+        if uri:
+            return uri
+
+    output_info = getattr(job, "output_info", None) or getattr(job, "output", None)
+    if output_info:
+        for attr in (
+            "gcs_output_directory",
+            "gcs_output_dir",
+            "gcs_output_uri",
+            "output_uri",
+        ):
+            uri = _get_attr(output_info, attr)
+            if uri:
+                return uri
+        if isinstance(output_info, dict):
+            for key in (
+                "gcs_output_directory",
+                "gcsOutputDirectory",
+                "gcs_output_uri",
+                "gcsOutputUri",
+                "output_uri",
+                "outputUri",
+            ):
+                uri = output_info.get(key)
+                if uri:
+                    return str(uri)
+
+    return None
+
+
 def _extract_response_text(response: Dict | None) -> str | None:
     if not isinstance(response, dict):
         return None
@@ -280,12 +319,13 @@ def get_gemini_job_status(job_names: List[str], config: GeminiConfig) -> List[Di
     statuses: List[Dict] = []
     for job_name in job_names:
         job = client.batches.get(name=job_name)
+        output_uri = _extract_output_uri(job)
         statuses.append(
             {
                 "name": job.name,
                 "state": getattr(job, "state", None),
                 "display_name": getattr(job, "display_name", None),
-                "output_uri": getattr(job, "output_gcs_uri", getattr(job, "output_output_gcs_uri", None)),
+                "output_uri": output_uri,
                 "error": getattr(job, "error", None),
             }
         )
@@ -300,7 +340,7 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
     downloaded: List[Path] = []
     for job_name in job_names:
         job = client.batches.get(name=job_name)
-        output_uri = getattr(job, "output_gcs_uri", getattr(job, "output_output_gcs_uri", None))
+        output_uri = _extract_output_uri(job)
         if not output_uri:
             continue
         storage_client = storage.Client()

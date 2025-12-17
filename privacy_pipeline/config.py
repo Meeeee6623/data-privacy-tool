@@ -26,6 +26,7 @@ class YoloEConfig:
     visualize: bool = False
     visualization_dir: Optional[Path] = None
     output_jsonl: Path = Path("yoloe_output.jsonl")
+    attribute_filters: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -44,6 +45,7 @@ class GeminiConfig:
     project: Optional[str] = None
     location: str = "us-central1"
     model: str = "gemini-2.0-flash"
+    attribute_filters: Optional[Dict[str, str]] = None
 
 
 @dataclass

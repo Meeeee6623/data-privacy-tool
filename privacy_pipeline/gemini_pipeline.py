@@ -22,6 +22,12 @@ def _load_yolo_output(path: Path) -> Iterable[Dict]:
             yield json.loads(line)
 
 
+def _matches_filters(attributes: Dict, filters: Dict[str, str] | None) -> bool:
+    if not filters:
+        return True
+    return all(attributes.get(key) == value for key, value in filters.items())
+
+
 def _scene_root(image_path: Path, levels_up: int) -> Path:
     levels_up = max(levels_up, 1)
     current = image_path
@@ -35,6 +41,8 @@ def collect_flagged_scenes(yolo_output: Path, config: GeminiConfig) -> Dict[Path
     flagged_scenes: set[Path] = set()
 
     for record in _load_yolo_output(yolo_output):
+        if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
+            continue
         image_path = Path(record["image_path"])
         scene_path = _scene_root(image_path, config.scene_directory_level)
         all_images[scene_path].append(str(image_path))
@@ -158,6 +166,8 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
 def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config: GeminiConfig) -> Path:
     scene_to_attributes: Dict[str, Dict] = {}
     for record in _load_yolo_output(original_index):
+        if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
+            continue
         scene_path = str(_scene_root(Path(record["image_path"]), config.scene_directory_level))
         scene_to_attributes.setdefault(scene_path, record.get("attributes", {}))
 
@@ -167,13 +177,14 @@ def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config:
             key = record.get("key")
             result = record.get("result", {})
             contents = result.get("contents", []) if isinstance(result, dict) else []
-            parsed.append(
-                {
-                    "scene_path": key,
-                    "attributes": scene_to_attributes.get(key, {}),
-                    "gemini_response": contents,
-                }
-            )
+            if key in scene_to_attributes:
+                parsed.append(
+                    {
+                        "scene_path": key,
+                        "attributes": scene_to_attributes.get(key, {}),
+                        "gemini_response": contents,
+                    }
+                )
 
     logger.info("Parsed %d Gemini batch outputs", len(parsed))
 

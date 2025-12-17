@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -54,6 +55,12 @@ def _load_index(jsonl_path: Path) -> Iterable[Dict]:
             yield json.loads(line)
 
 
+def _matches_filters(attributes: Dict, filters: Optional[Dict[str, str]]) -> bool:
+    if not filters:
+        return True
+    return all(attributes.get(key) == value for key, value in filters.items())
+
+
 def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
     logger.info("Running YOLOE on index %s", index_jsonl)
     config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +74,18 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
         mapping_path,
     )
 
+    index_records = [
+        record
+        for record in _load_index(index_jsonl)
+        if _matches_filters(record.get("attributes", {}), config.attribute_filters)
+    ]
+
+    if not index_records:
+        logger.warning("No index records matched the provided attribute filters; nothing to process")
+
+    image_paths = [Path(record["image_path"]) for record in index_records]
+    common_root = Path(os.path.commonpath([str(p.parent) for p in image_paths])) if image_paths else None
+
     records: List[Dict] = []
     viz_dir: Optional[Path] = None
     if config.visualize:
@@ -74,7 +93,7 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
         viz_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Saving YOLOE visualizations to %s", viz_dir)
 
-    for record in _load_index(index_jsonl):
+    for record in index_records:
         image_path = Path(record["image_path"])
         result = model.predict(str(image_path), conf=config.threshold, verbose=False)[0]
         detections = []
@@ -97,7 +116,16 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
         visualization_path = None
         if viz_dir and detections:
             plotted = result.plot()
-            viz_path = viz_dir / f"{image_path.stem}_yoloe.png"
+            relative_image = None
+            if common_root:
+                try:
+                    relative_image = image_path.relative_to(common_root)
+                except ValueError:
+                    logger.debug("Could not derive relative path for %s from %s", image_path, common_root)
+            relative_image = relative_image or Path(image_path.name)
+
+            viz_path = viz_dir / relative_image.with_name(f"{relative_image.stem}_yoloe.png")
+            viz_path.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(plotted[..., ::-1]).save(viz_path)
             visualization_path = str(viz_path)
 

@@ -66,3 +66,18 @@ gemini:
   # Optional filters to restrict which detections are forwarded
   attribute_filters:
     scene: scene-01
+  # Optional override for allowed #FLAG categories and their descriptions
+  flag_categories:
+    - PII
+    - CONFIDENTIAL_INFO
+    - SECURITY_INFO
+    - MACHINE_READABLE_CODE
+    - BRANDING_LOGOS
+    - OTHER
+  flag_category_descriptions:
+    PII: Personally identifiable information
+    CONFIDENTIAL_INFO: Sensitive or confidential content
+    SECURITY_INFO: Security-related details (passwords, keys, etc.)
+    MACHINE_READABLE_CODE: Barcodes, QR codes, or other machine-readable markings
+    BRANDING_LOGOS: Logos or branded imagery
+    OTHER: Other content requiring review

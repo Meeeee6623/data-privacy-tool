@@ -49,6 +49,20 @@ def _parse_attribute_map(raw: list[str] | None) -> dict[str, int] | None:
     return mapping or None
 
 
+def _parse_attribute_filters(raw: list[str] | None) -> dict[str, str] | None:
+    if not raw:
+        return None
+
+    filters: dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        if name:
+            filters[name] = value
+    return filters or None
+
+
 def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "model",
@@ -62,6 +76,12 @@ def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, default=Path("yoloe_output.jsonl"))
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--viz-dir", type=Path, help="Directory for YOLOE visualizations")
+    parser.add_argument(
+        "--attribute-filter",
+        nargs="*",
+        metavar="NAME=VALUE",
+        help="Only process records whose attributes match all provided filters",
+    )
 
 
 def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
@@ -78,6 +98,12 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", type=str, default="gemini-2.0-flash")
     parser.add_argument("--jobs-file", type=Path, default=Path("gemini_jobs.json"))
     parser.add_argument("--final-output", type=Path, default=Path("gemini_output.jsonl"))
+    parser.add_argument(
+        "--attribute-filter",
+        nargs="*",
+        metavar="NAME=VALUE",
+        help="Only process records whose attributes match all provided filters",
+    )
 
 
 def _configure_logging(verbose: bool) -> Path:
@@ -134,6 +160,12 @@ def main():
     parse_parser.add_argument("--original-index", type=Path, required=True)
     parse_parser.add_argument("--scene-level", type=int, default=1)
     parse_parser.add_argument("--final-output", type=Path, default=Path("gemini_output.jsonl"))
+    parse_parser.add_argument(
+        "--attribute-filter",
+        nargs="*",
+        metavar="NAME=VALUE",
+        help="Only include Gemini outputs whose attributes match all provided filters",
+    )
 
     args = parser.parse_args()
 
@@ -159,6 +191,7 @@ def main():
             visualize=args.visualize,
             visualization_dir=args.viz_dir,
             output_jsonl=args.output,
+            attribute_filters=_parse_attribute_filters(args.attribute_filter),
         )
         output = run_yoloe(args.index, config)
         print(f"Wrote YOLOE output to {output}")
@@ -177,6 +210,7 @@ def main():
             location=args.location,
             model=args.model,
             final_output_jsonl=args.final_output,
+            attribute_filters=_parse_attribute_filters(args.attribute_filter),
         )
         flagged = collect_flagged_scenes(args.yolo_output, config)
         batch_files = create_gemini_batches(flagged, config)
@@ -209,6 +243,7 @@ def main():
             min_confidence=0.0,
             max_batch_size_bytes=1.0,
             output_batch_dir=Path(),
+            attribute_filters=_parse_attribute_filters(args.attribute_filter),
         )
         output = parse_gemini_output(args.outputs, args.original_index, config)
         print(f"Wrote parsed Gemini output to {output}")

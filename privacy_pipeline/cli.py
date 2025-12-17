@@ -14,7 +14,9 @@ from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
     collect_flagged_scenes,
     create_gemini_batches,
+    download_completed_jobs,
     get_gemini_job_status,
+    clean_gemini_logs,
     parse_gemini_output,
     submit_gemini_batches,
 )
@@ -200,6 +202,17 @@ def _normalize_attribute_map(raw: Any) -> dict[str, int] | None:
 
 def _arg_value(args: argparse.Namespace, name: str) -> Any:
     return getattr(args, name, None)
+
+
+def _load_job_names(job_names: list[str], jobs_file: Path) -> list[str]:
+    if job_names:
+        return job_names
+    if not jobs_file.exists():
+        raise ValueError("Job names must be provided via CLI or config file")
+    loaded_jobs = json.loads(jobs_file.read_text() or "[]")
+    if not isinstance(loaded_jobs, list):
+        raise ValueError("Jobs file must contain a JSON array of job names")
+    return [str(job) for job in loaded_jobs if job]
 
 
 def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> DatasetConfig:
@@ -453,6 +466,16 @@ def main():
     check_parser.add_argument("--project")
     check_parser.add_argument("--location")
 
+    download_parser = subparsers.add_parser(
+        "download-gemini", help="Download completed Gemini batch outputs and clean logs"
+    )
+    download_parser.add_argument("job_names", nargs="*", help="Optional Gemini batch job names")
+    download_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
+    download_parser.add_argument("--output-dir", type=Path, help="Directory to store downloaded outputs")
+    download_parser.add_argument("--cleaned-dir", type=Path, help="Directory to store cleaned logs")
+    download_parser.add_argument("--project")
+    download_parser.add_argument("--location")
+
     parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
     parse_parser.add_argument("outputs", nargs="+", type=Path)
     parse_parser.add_argument("--original-index", type=Path)
@@ -538,17 +561,20 @@ def main():
 
     elif args.command == "check-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)
-        job_names = args.job_names or []
-        if not job_names:
-            jobs_file = config.submitted_jobs_file
-            if not jobs_file.exists():
-                raise ValueError("Job names must be provided via CLI or config file")
-            loaded_jobs = json.loads(jobs_file.read_text() or "[]")
-            if not isinstance(loaded_jobs, list):
-                raise ValueError("Jobs file must contain a JSON array of job names")
-            job_names = [str(job) for job in loaded_jobs if job]
+        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
         statuses = get_gemini_job_status(job_names, config)
         print(json.dumps({"jobs": statuses}, indent=2))
+
+    elif args.command == "download-gemini":
+        config = _build_gemini_config(args, config_data, require_prompt=False)
+        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
+        stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
+        output_dir = _resolve_path(args.output_dir, None, stage_root / "gemini_outputs")
+        cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root / "gemini_outputs_clean")
+
+        downloaded = download_completed_jobs(job_names, output_dir, config)
+        cleaned = clean_gemini_logs(downloaded, cleaned_dir) if downloaded else []
+        print(json.dumps({"downloaded": [str(p) for p in downloaded], "cleaned": [str(p) for p in cleaned]}, indent=2))
 
     elif args.command == "parse-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)

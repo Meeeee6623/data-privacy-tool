@@ -1,6 +1,8 @@
 import base64
+import importlib.util
 import json
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -10,7 +12,23 @@ from google.cloud import storage
 
 from privacy_pipeline.config import GeminiConfig
 
+ORJSON_AVAILABLE = importlib.util.find_spec("orjson") is not None
+if ORJSON_AVAILABLE:
+    import orjson  # type: ignore
+
+
 logger = logging.getLogger(__name__)
+
+
+FLAG_PATTERN = re.compile(r"#FLAG\s*\[?([^\]\n]+)\]?")
+ALLOWED_FLAG_CATEGORIES = {
+    "PII",
+    "CONFIDENTIAL_INFO",
+    "SECURITY_INFO",
+    "MACHINE_READABLE_CODE",
+    "BRANDING_LOGOS",
+    "OTHER",
+}
 
 
 def _load_yolo_output(path: Path) -> Iterable[Dict]:
@@ -22,10 +40,96 @@ def _load_yolo_output(path: Path) -> Iterable[Dict]:
             yield json.loads(line)
 
 
+def _load_json_line(line: str) -> Dict:
+    if ORJSON_AVAILABLE:
+        return orjson.loads(line)
+    return json.loads(line)
+
+
+def _dump_json_line(record: Dict) -> bytes:
+    if ORJSON_AVAILABLE:
+        return orjson.dumps(record)
+    return json.dumps(record).encode("utf-8")
+
+
 def _matches_filters(attributes: Dict, filters: Dict[str, str] | None) -> bool:
     if not filters:
         return True
     return all(attributes.get(key) == value for key, value in filters.items())
+
+
+def _strip_inline_images(request: Dict | None) -> Dict | None:
+    if not isinstance(request, dict):
+        return request
+
+    cleaned = dict(request)
+    cleaned_contents = []
+    for content in request.get("contents", []):
+        if not isinstance(content, dict):
+            cleaned_contents.append(content)
+            continue
+
+        cleaned_parts = []
+        for part in content.get("parts", []):
+            if not isinstance(part, dict):
+                cleaned_parts.append(part)
+                continue
+
+            if "inlineData" in part and isinstance(part["inlineData"], dict):
+                inline_data = dict(part["inlineData"])
+                inline_data.pop("data", None)
+                cleaned_part = dict(part)
+                cleaned_part["inlineData"] = inline_data
+                cleaned_parts.append(cleaned_part)
+            else:
+                cleaned_parts.append(part)
+
+        cleaned_content = dict(content)
+        if cleaned_parts:
+            cleaned_content["parts"] = cleaned_parts
+        cleaned_contents.append(cleaned_content)
+
+    if cleaned_contents:
+        cleaned["contents"] = cleaned_contents
+    return cleaned
+
+
+def _extract_response_text(response: Dict | None) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    candidates = response.get("candidates")
+    if not candidates:
+        return None
+    candidate = candidates[0]
+    if not isinstance(candidate, dict):
+        return None
+    content = candidate.get("content", {})
+    if not isinstance(content, dict):
+        return None
+    parts = content.get("parts", [])
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if isinstance(part, dict) and "text" in part:
+            return part.get("text")
+    return None
+
+
+def _extract_flag_categories(text: str | None) -> list[str]:
+    if not text:
+        return []
+    match = FLAG_PATTERN.search(text)
+    if not match:
+        return []
+    raw_categories = re.split(r"[\s,]+", match.group(1))
+    categories: list[str] = []
+    for category in raw_categories:
+        normalized = category.strip().upper().replace(" ", "_")
+        if not normalized:
+            continue
+        if normalized in ALLOWED_FLAG_CATEGORIES:
+            categories.append(normalized)
+    return categories
 
 
 def _scene_root(image_path: Path, levels_up: int) -> Path:
@@ -157,7 +261,7 @@ def get_gemini_job_status(job_names: List[str], config: GeminiConfig) -> List[Di
                 "name": job.name,
                 "state": getattr(job, "state", None),
                 "display_name": getattr(job, "display_name", None),
-                "output_uri": getattr(job, "output_output_gcs_uri", None),
+                "output_uri": getattr(job, "output_gcs_uri", getattr(job, "output_output_gcs_uri", None)),
                 "error": getattr(job, "error", None),
             }
         )
@@ -172,9 +276,9 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
     downloaded: List[Path] = []
     for job_name in job_names:
         job = client.batches.get(name=job_name)
-        if not job.output_output_gcs_uri:
+        output_uri = getattr(job, "output_gcs_uri", getattr(job, "output_output_gcs_uri", None))
+        if not output_uri:
             continue
-        output_uri = job.output_output_gcs_uri
         storage_client = storage.Client()
         bucket_name, path = output_uri.replace("gs://", "").split("/", 1)
         bucket = storage_client.bucket(bucket_name)
@@ -185,6 +289,39 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
             logger.debug("Downloaded output blob %s to %s", blob.name, local_path)
     logger.info("Downloaded %d completed job outputs to %s", len(downloaded), destination_dir)
     return downloaded
+
+
+def clean_gemini_logs(batch_outputs: List[Path], cleaned_dir: Path) -> List[Path]:
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+
+    cleaned_files: List[Path] = []
+    for batch_output in batch_outputs:
+        cleaned_path = cleaned_dir / batch_output.name
+        with batch_output.open() as infile, cleaned_path.open("wb") as outfile:
+            for line in infile:
+                if not line.strip():
+                    continue
+
+                record = _load_json_line(line)
+                request = record.get("request") if isinstance(record, dict) else None
+                response = record.get("response") if isinstance(record, dict) else None
+
+                cleaned_record = dict(record) if isinstance(record, dict) else {"raw": record}
+                cleaned_record["request"] = _strip_inline_images(request)
+
+                response_text = _extract_response_text(response)
+                cleaned_record["response_text"] = response_text
+                categories = _extract_flag_categories(response_text)
+                cleaned_record["flag_categories"] = categories
+                cleaned_record["is_flagged"] = bool(FLAG_PATTERN.search(response_text or ""))
+
+                outfile.write(_dump_json_line(cleaned_record) + b"\n")
+
+        cleaned_files.append(cleaned_path)
+        logger.debug("Cleaned Gemini output %s -> %s", batch_output, cleaned_path)
+
+    logger.info("Wrote %d cleaned Gemini output files to %s", len(cleaned_files), cleaned_dir)
+    return cleaned_files
 
 
 def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config: GeminiConfig) -> Path:

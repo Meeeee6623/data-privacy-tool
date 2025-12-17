@@ -215,4 +215,7 @@ __pycache__/
 uv.lock
 *.pt
 *.jsonl
+*.json
 *.ts
+
+config.yaml

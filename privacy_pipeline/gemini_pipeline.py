@@ -5,7 +5,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from google import genai
 from google.cloud import storage
@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 FLAG_PATTERN = re.compile(r"#FLAG\s*\[?([^\]\n]+)\]?")
-ALLOWED_FLAG_CATEGORIES = {
-    "PII",
-    "CONFIDENTIAL_INFO",
-    "SECURITY_INFO",
-    "MACHINE_READABLE_CODE",
-    "BRANDING_LOGOS",
-    "OTHER",
+DEFAULT_FLAG_CATEGORY_DESCRIPTIONS: Dict[str, str] = {
+    "PII": "Personally identifiable information",
+    "CONFIDENTIAL_INFO": "Sensitive or confidential content",
+    "SECURITY_INFO": "Security-related details (passwords, keys, etc.)",
+    "MACHINE_READABLE_CODE": "Barcodes, QR codes, or other machine-readable markings",
+    "BRANDING_LOGOS": "Logos or branded imagery",
+    "OTHER": "Other content requiring review",
 }
 
 
@@ -115,7 +115,29 @@ def _extract_response_text(response: Dict | None) -> str | None:
     return None
 
 
-def _extract_flag_categories(text: str | None) -> list[str]:
+def _normalize_flag_categories(categories: Iterable[str] | None) -> set[str]:
+    if not categories:
+        return set()
+    normalized = set()
+    for category in categories:
+        normalized_name = str(category).strip().upper().replace(" ", "_")
+        if normalized_name:
+            normalized.add(normalized_name)
+    return normalized
+
+
+def _normalize_category_descriptions(raw: Mapping[str, str] | None) -> Dict[str, str]:
+    if not raw:
+        return {}
+    normalized: Dict[str, str] = {}
+    for key, value in raw.items():
+        normalized_key = str(key).strip().upper().replace(" ", "_")
+        if normalized_key:
+            normalized[normalized_key] = str(value)
+    return normalized
+
+
+def _extract_flag_categories(text: str | None, allowed_categories: Optional[set[str]] = None) -> list[str]:
     if not text:
         return []
     match = FLAG_PATTERN.search(text)
@@ -123,12 +145,14 @@ def _extract_flag_categories(text: str | None) -> list[str]:
         return []
     raw_categories = re.split(r"[\s,]+", match.group(1))
     categories: list[str] = []
+    normalized_allowed = allowed_categories or _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
     for category in raw_categories:
         normalized = category.strip().upper().replace(" ", "_")
         if not normalized:
             continue
-        if normalized in ALLOWED_FLAG_CATEGORIES:
-            categories.append(normalized)
+        if normalized_allowed and normalized not in normalized_allowed:
+            continue
+        categories.append(normalized)
     return categories
 
 
@@ -291,8 +315,21 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
     return downloaded
 
 
-def clean_gemini_logs(batch_outputs: List[Path], cleaned_dir: Path) -> List[Path]:
+def clean_gemini_logs(
+    batch_outputs: List[Path],
+    cleaned_dir: Path,
+    allowed_categories: Optional[Iterable[str]] = None,
+    category_descriptions: Optional[Mapping[str, str]] = None,
+) -> List[Path]:
     cleaned_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized_allowed = _normalize_flag_categories(allowed_categories)
+    if not normalized_allowed and category_descriptions:
+        normalized_allowed = _normalize_flag_categories(category_descriptions.keys())
+    if not normalized_allowed:
+        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
+    normalized_descriptions = dict(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
+    normalized_descriptions.update(_normalize_category_descriptions(category_descriptions))
 
     cleaned_files: List[Path] = []
     for batch_output in batch_outputs:
@@ -311,8 +348,15 @@ def clean_gemini_logs(batch_outputs: List[Path], cleaned_dir: Path) -> List[Path
 
                 response_text = _extract_response_text(response)
                 cleaned_record["response_text"] = response_text
-                categories = _extract_flag_categories(response_text)
+                categories = _extract_flag_categories(response_text, normalized_allowed)
                 cleaned_record["flag_categories"] = categories
+                category_details = {
+                    category: normalized_descriptions.get(category)
+                    for category in categories
+                    if category in normalized_descriptions
+                }
+                if category_details:
+                    cleaned_record["flag_category_descriptions"] = category_details
                 cleaned_record["is_flagged"] = bool(FLAG_PATTERN.search(response_text or ""))
 
                 outfile.write(_dump_json_line(cleaned_record) + b"\n")

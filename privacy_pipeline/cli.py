@@ -119,6 +119,33 @@ def _normalize_str_list(raw: Any) -> list[str] | None:
     return None
 
 
+def _parse_category_descriptions(raw: Any) -> dict[str, str] | None:
+    if raw is None:
+        return None
+
+    if isinstance(raw, dict):
+        parsed = {str(k): str(v) for k, v in raw.items() if k}
+        return parsed or None
+
+    if isinstance(raw, list):
+        parsed: dict[str, str] = {}
+        for item in raw:
+            if not isinstance(item, str) or ":" not in item:
+                continue
+            name, description = item.split(":", 1)
+            if name:
+                parsed[name] = description
+        return parsed or None
+
+    if isinstance(raw, (str, Path)):
+        text = str(raw)
+        if ":" in text:
+            name, description = text.split(":", 1)
+            if name:
+                return {name: description}
+    return None
+
+
 def _normalize_filter_sets(raw: Any) -> list[dict[str, str]] | None:
     if raw is None:
         return None
@@ -331,6 +358,18 @@ def _build_gemini_config(
     location = location_arg if location_arg is not None else gemini_cfg.get("location", "us-central1")
     model_arg = _arg_value(args, "model")
     model = model_arg if model_arg is not None else gemini_cfg.get("model", "gemini-2.0-flash")
+    flag_categories_arg = _arg_value(args, "flag_categories")
+    flag_categories = (
+        _normalize_str_list(flag_categories_arg)
+        if flag_categories_arg is not None
+        else _normalize_str_list(gemini_cfg.get("flag_categories"))
+    )
+    flag_category_descriptions_arg = _arg_value(args, "flag_category_descriptions")
+    flag_category_descriptions = (
+        _parse_category_descriptions(flag_category_descriptions_arg)
+        if flag_category_descriptions_arg is not None
+        else _parse_category_descriptions(gemini_cfg.get("flag_category_descriptions"))
+    )
     final_output = _resolve_path(
         _arg_value(args, "final_output"),
         gemini_cfg.get("final_output_jsonl"),
@@ -351,6 +390,8 @@ def _build_gemini_config(
         model=model,
         final_output_jsonl=final_output,
         attribute_filters=attribute_filters,
+        flag_categories=flag_categories,
+        flag_category_descriptions=flag_category_descriptions,
     )
 
 
@@ -394,6 +435,17 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", type=str)
     parser.add_argument("--jobs-file", type=Path)
     parser.add_argument("--final-output", type=Path)
+    parser.add_argument(
+        "--flag-categories",
+        nargs="*",
+        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
+    )
+    parser.add_argument(
+        "--flag-category-descriptions",
+        action="append",
+        metavar="NAME:DESCRIPTION",
+        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
+    )
     parser.add_argument(
         "--attribute-filter",
         nargs="*",
@@ -475,6 +527,17 @@ def main():
     download_parser.add_argument("--cleaned-dir", type=Path, help="Directory to store cleaned logs")
     download_parser.add_argument("--project")
     download_parser.add_argument("--location")
+    download_parser.add_argument(
+        "--flag-categories",
+        nargs="*",
+        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
+    )
+    download_parser.add_argument(
+        "--flag-category-descriptions",
+        action="append",
+        metavar="NAME:DESCRIPTION",
+        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
+    )
 
     parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
     parse_parser.add_argument("outputs", nargs="+", type=Path)
@@ -573,7 +636,16 @@ def main():
         cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root / "gemini_outputs_clean")
 
         downloaded = download_completed_jobs(job_names, output_dir, config)
-        cleaned = clean_gemini_logs(downloaded, cleaned_dir) if downloaded else []
+        cleaned = (
+            clean_gemini_logs(
+                downloaded,
+                cleaned_dir,
+                allowed_categories=config.flag_categories,
+                category_descriptions=config.flag_category_descriptions,
+            )
+            if downloaded
+            else []
+        )
         print(json.dumps({"downloaded": [str(p) for p in downloaded], "cleaned": [str(p) for p in cleaned]}, indent=2))
 
     elif args.command == "parse-gemini":

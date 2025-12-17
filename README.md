@@ -55,6 +55,52 @@ python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
   --final-output gemini_output.jsonl
 ```
 
+### YAML configuration
+
+All CLI options can be provided via a YAML file and overridden by explicit CLI
+flags. The CLI will automatically load `config.yaml` from the current working
+directory when present. You can also point to any file explicitly with
+`--config path/to/config.yaml`.
+
+An exhaustive example is provided at `config.example.yaml`; copy it to
+`config.yaml` and edit it to match your environment.
+
+Example:
+
+```yaml
+dataset:
+  image_root: /path/to/images
+  recursive: true
+  path_attributes: [lab, building, scene]
+  path_attribute_map: {lab: 3, building: 2, scene: 1}
+  user_jsonl: /path/to/custom_attributes.jsonl
+  output_jsonl: image_index.jsonl
+
+yoloe:
+  model_path: yoloe-11l-seg.pt
+  threshold: 0.5
+  visualize: false
+  visualization_dir: yoloe_visualizations
+  output_jsonl: yoloe_output.jsonl
+  attribute_filters: {lab: example-lab}
+
+gemini:
+  prompt: "<your prompt>"
+  classes_to_forward: [person, screen]
+  min_confidence: 0.5
+  scene_directory_level: 2
+  max_batch_size_bytes: 1981808640
+  output_batch_dir: gemini_batches
+  gcs_bucket: your-bucket
+  project: your-gcp-project
+  submitted_jobs_file: gemini_jobs.json
+  final_output_jsonl: gemini_output.jsonl
+```
+
+With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
+loads defaults from `config.yaml` automatically and only needs CLI overrides
+for values that should differ from the file.
+
 The YOLOE runner automatically downloads the requested checkpoint (defaulting to
 `yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`
 to match `yoloe_test.ipynb`, saves the customized weights alongside the original

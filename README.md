@@ -20,8 +20,13 @@ Key steps:
    trigger Gemini. When any image in a scene is flagged, all images from that
    scene (configurable directory level) are bundled into a Gemini batch request.
    Batches are automatically split below 1.85 GB and can be uploaded/submitted
-   via the CLI. Results are parsed back into a JSONL that maps each scene to the
+   via the CLI. A missing target GCS bucket is created automatically before
+   upload. Results are parsed back into a JSONL that maps each scene to the
    Gemini OCR output.
+4. **Download and clean Gemini logs** – Pull completed batch outputs directly
+   from GCS, strip inline image payloads, parse `#FLAG[...]` markers with
+   customizable categories/descriptions, and emit cleaned JSONL/CSV files for
+   downstream analysis.
 
 ## CLI usage
 Commands are provided via `python -m privacy_pipeline.cli`:
@@ -49,10 +54,19 @@ python -m privacy_pipeline.cli prepare-gemini yoloe_output.jsonl \
 python -m privacy_pipeline.cli submit-gemini gemini_batches \
   --gcs-bucket your-bucket --project your-gcp-project
 
+# 4b) Check batch job status (names or stored jobs file)
+python -m privacy_pipeline.cli status-gemini --jobs-file gemini_jobs.json
+python -m privacy_pipeline.cli status-gemini jobname-123 another-job
+
 # 5) Parse Gemini outputs
 python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
   --original-index image_index.jsonl --scene-level 2 \
   --final-output gemini_output.jsonl
+
+# 6) Download and clean Gemini logs once jobs finish
+python -m privacy_pipeline.cli download-gemini --jobs-file gemini_jobs.json \
+  --output-dir gemini_logs --categories PII CONFIDENTIAL_INFO --category-descriptions \
+  "PII:Personal identifiers" "CONFIDENTIAL_INFO:Sensitive company data"
 
 # Inspect or merge JSONL files
 python -m privacy_pipeline.cli json-utils list-values image_index.jsonl --attributes lab building
@@ -107,6 +121,11 @@ gemini:
   project: your-gcp-project
   submitted_jobs_file: gemini_jobs.json
   final_output_jsonl: gemini_output.jsonl
+  flag_categories: [PII, CONFIDENTIAL_INFO, SECURITY_INFO]
+  flag_category_descriptions:
+    PII: Personal identifiers
+    CONFIDENTIAL_INFO: Sensitive company data
+    SECURITY_INFO: Credentials or auth secrets
 ```
 
 Example `json_utils.config.yaml`:
@@ -132,6 +151,10 @@ merge_filtered:
 With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
 loads defaults from `config.yaml` automatically and only needs CLI overrides
 for values that should differ from the file.
+
+Custom flag categories and descriptions flow through to the download-and-clean
+step, so teams can align Gemini `#FLAG[...]` markers with their own taxonomy
+without code changes.
 
 The YOLOE runner automatically downloads the requested checkpoint (defaulting to
 `yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`

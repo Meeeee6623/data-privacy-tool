@@ -14,6 +14,9 @@ from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
     collect_flagged_scenes,
     create_gemini_batches,
+    download_completed_jobs,
+    get_gemini_job_status,
+    clean_gemini_logs,
     parse_gemini_output,
     submit_gemini_batches,
 )
@@ -116,6 +119,33 @@ def _normalize_str_list(raw: Any) -> list[str] | None:
     return None
 
 
+def _parse_category_descriptions(raw: Any) -> dict[str, str] | None:
+    if raw is None:
+        return None
+
+    if isinstance(raw, dict):
+        parsed = {str(k): str(v) for k, v in raw.items() if k}
+        return parsed or None
+
+    if isinstance(raw, list):
+        parsed: dict[str, str] = {}
+        for item in raw:
+            if not isinstance(item, str) or ":" not in item:
+                continue
+            name, description = item.split(":", 1)
+            if name:
+                parsed[name] = description
+        return parsed or None
+
+    if isinstance(raw, (str, Path)):
+        text = str(raw)
+        if ":" in text:
+            name, description = text.split(":", 1)
+            if name:
+                return {name: description}
+    return None
+
+
 def _normalize_filter_sets(raw: Any) -> list[dict[str, str]] | None:
     if raw is None:
         return None
@@ -199,6 +229,17 @@ def _normalize_attribute_map(raw: Any) -> dict[str, int] | None:
 
 def _arg_value(args: argparse.Namespace, name: str) -> Any:
     return getattr(args, name, None)
+
+
+def _load_job_names(job_names: list[str], jobs_file: Path) -> list[str]:
+    if job_names:
+        return job_names
+    if not jobs_file.exists():
+        raise ValueError("Job names must be provided via CLI or config file")
+    loaded_jobs = json.loads(jobs_file.read_text() or "[]")
+    if not isinstance(loaded_jobs, list):
+        raise ValueError("Jobs file must contain a JSON array of job names")
+    return [str(job) for job in loaded_jobs if job]
 
 
 def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> DatasetConfig:
@@ -317,6 +358,18 @@ def _build_gemini_config(
     location = location_arg if location_arg is not None else gemini_cfg.get("location", "us-central1")
     model_arg = _arg_value(args, "model")
     model = model_arg if model_arg is not None else gemini_cfg.get("model", "gemini-2.0-flash")
+    flag_categories_arg = _arg_value(args, "flag_categories")
+    flag_categories = (
+        _normalize_str_list(flag_categories_arg)
+        if flag_categories_arg is not None
+        else _normalize_str_list(gemini_cfg.get("flag_categories"))
+    )
+    flag_category_descriptions_arg = _arg_value(args, "flag_category_descriptions")
+    flag_category_descriptions = (
+        _parse_category_descriptions(flag_category_descriptions_arg)
+        if flag_category_descriptions_arg is not None
+        else _parse_category_descriptions(gemini_cfg.get("flag_category_descriptions"))
+    )
     final_output = _resolve_path(
         _arg_value(args, "final_output"),
         gemini_cfg.get("final_output_jsonl"),
@@ -337,6 +390,8 @@ def _build_gemini_config(
         model=model,
         final_output_jsonl=final_output,
         attribute_filters=attribute_filters,
+        flag_categories=flag_categories,
+        flag_category_descriptions=flag_category_descriptions,
     )
 
 
@@ -380,6 +435,17 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", type=str)
     parser.add_argument("--jobs-file", type=Path)
     parser.add_argument("--final-output", type=Path)
+    parser.add_argument(
+        "--flag-categories",
+        nargs="*",
+        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
+    )
+    parser.add_argument(
+        "--flag-category-descriptions",
+        action="append",
+        metavar="NAME:DESCRIPTION",
+        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
+    )
     parser.add_argument(
         "--attribute-filter",
         nargs="*",
@@ -445,6 +511,33 @@ def main():
     submit_parser.add_argument("--project")
     submit_parser.add_argument("--location")
     submit_parser.add_argument("--model")
+
+    check_parser = subparsers.add_parser("check-gemini", help="Check status of submitted Gemini batches")
+    check_parser.add_argument("job_names", nargs="*", help="Optional Gemini batch job names")
+    check_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
+    check_parser.add_argument("--project")
+    check_parser.add_argument("--location")
+
+    download_parser = subparsers.add_parser(
+        "download-gemini", help="Download completed Gemini batch outputs and clean logs"
+    )
+    download_parser.add_argument("job_names", nargs="*", help="Optional Gemini batch job names")
+    download_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
+    download_parser.add_argument("--output-dir", type=Path, help="Directory to store downloaded outputs")
+    download_parser.add_argument("--cleaned-dir", type=Path, help="Directory to store cleaned logs")
+    download_parser.add_argument("--project")
+    download_parser.add_argument("--location")
+    download_parser.add_argument(
+        "--flag-categories",
+        nargs="*",
+        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
+    )
+    download_parser.add_argument(
+        "--flag-category-descriptions",
+        action="append",
+        metavar="NAME:DESCRIPTION",
+        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
+    )
 
     parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
     parse_parser.add_argument("outputs", nargs="+", type=Path)
@@ -528,6 +621,32 @@ def main():
         config = _build_gemini_config(args, config_data, require_prompt=False)
         job_names = submit_gemini_batches(batch_files, config)
         print(json.dumps({"submitted_jobs": job_names}, indent=2))
+
+    elif args.command == "check-gemini":
+        config = _build_gemini_config(args, config_data, require_prompt=False)
+        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
+        statuses = get_gemini_job_status(job_names, config)
+        print(json.dumps({"jobs": statuses}, indent=2))
+
+    elif args.command == "download-gemini":
+        config = _build_gemini_config(args, config_data, require_prompt=False)
+        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
+        stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
+        output_dir = _resolve_path(args.output_dir, None, stage_root / "gemini_outputs")
+        cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root / "gemini_outputs_clean")
+
+        downloaded = download_completed_jobs(job_names, output_dir, config)
+        cleaned = (
+            clean_gemini_logs(
+                downloaded,
+                cleaned_dir,
+                allowed_categories=config.flag_categories,
+                category_descriptions=config.flag_category_descriptions,
+            )
+            if downloaded
+            else []
+        )
+        print(json.dumps({"downloaded": [str(p) for p in downloaded], "cleaned": [str(p) for p in cleaned]}, indent=2))
 
     elif args.command == "parse-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)

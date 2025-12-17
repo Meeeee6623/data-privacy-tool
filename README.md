@@ -41,7 +41,7 @@ python -m privacy_pipeline.cli yoloe image_index.jsonl \
 
 # 3) Prepare Gemini batches
 python -m privacy_pipeline.cli prepare-gemini yoloe_output.jsonl \
-  --prompt "<your prompt>" \
+ --prompt "<your prompt>" \
   --classes person screen --threshold 0.5 --scene-level 2 \
   --batch-dir gemini_batches --gcs-bucket your-bucket --project your-gcp-project
 
@@ -53,17 +53,29 @@ python -m privacy_pipeline.cli submit-gemini gemini_batches \
 python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
   --original-index image_index.jsonl --scene-level 2 \
   --final-output gemini_output.jsonl
+
+# Inspect or merge JSONL files
+python -m privacy_pipeline.cli json-utils list-values image_index.jsonl --attributes lab building
+python -m privacy_pipeline.cli json-utils summarize yoloe_output.jsonl --attributes lab building --filter lab=alpha --filter building=main
+python -m privacy_pipeline.cli json-utils merge-filtered yoloe --output merged_yoloe_output.jsonl
 ```
 
 ### YAML configuration
 
-All CLI options can be provided via a YAML file and overridden by explicit CLI
-flags. The CLI will automatically load `config.yaml` from the current working
-directory when present. You can also point to any file explicitly with
-`--config path/to/config.yaml`.
+All pipeline CLI options can be provided via a YAML file and overridden by
+explicit CLI flags. Pipeline commands automatically load `config.yaml` from the
+current working directory when present. You can also point to any file
+explicitly with `--config path/to/config.yaml`.
+
+JSON utility commands (`json-utils ...`) read their defaults from a separate
+file so they can be configured independently. By default, the CLI loads
+`json_utils.config.yaml` when present, but you can override this with
+`--config path/to/json_utils.config.yaml`.
 
 An exhaustive example is provided at `config.example.yaml`; copy it to
-`config.yaml` and edit it to match your environment.
+`config.yaml` and edit it to match your environment. A companion
+`json_utils.config.example.yaml` is also included; copy it to
+`json_utils.config.yaml` to opt into defaults for the JSON helpers.
 
 Example:
 
@@ -97,6 +109,26 @@ gemini:
   final_output_jsonl: gemini_output.jsonl
 ```
 
+Example `json_utils.config.yaml`:
+
+```yaml
+list_values:
+  inputs: [image_index.jsonl]
+  attributes: [lab, building]
+
+summarize:
+  inputs: [yoloe_output.jsonl]
+  attributes: [lab, building]
+  filters:
+    - lab=alpha
+    - {lab: alpha, building: main}
+
+merge_filtered:
+  stage: yoloe
+  base_dir: filters
+  output: merged_yoloe_output.jsonl
+```
+
 With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
 loads defaults from `config.yaml` automatically and only needs CLI overrides
 for values that should differ from the file.
@@ -115,3 +147,7 @@ Notes:
 - When Gemini is triggered by any image in a scene, **all images in that scene**
   are sent for OCR/classification.
 - `--max-bytes` can be adjusted if GCP batch limits change (default 1.85 GB).
+- When attribute filters are provided for YOLOE or Gemini, outputs are stored
+  under `filters/<stage>/<filter-slug>/` so parallel filtered runs cannot
+  clobber each other. Use `json-utils merge-filtered <stage>` to combine the
+  filtered JSONL files back into a single stage output.

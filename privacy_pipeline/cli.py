@@ -8,6 +8,8 @@ import yaml
 
 from privacy_pipeline.config import DatasetConfig, GeminiConfig, YoloEConfig
 from privacy_pipeline.dataset_index import build_image_index
+from privacy_pipeline.json_utils import list_attribute_values, merge_filtered_outputs, summarize_attributes
+from privacy_pipeline.utils import filtered_stage_dir
 from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
     collect_flagged_scenes,
@@ -18,6 +20,7 @@ from privacy_pipeline.gemini_pipeline import (
 
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
+DEFAULT_JSON_UTILS_CONFIG_PATH = Path("json_utils.config.yaml")
 
 
 def _add_common_index_args(parser: argparse.ArgumentParser) -> None:
@@ -73,6 +76,68 @@ def _parse_attribute_filters(raw: list[str] | None) -> dict[str, str] | None:
     return filters or None
 
 
+def _parse_filter_sets(raw: list[list[str]] | None) -> list[dict[str, str]] | None:
+    if not raw:
+        return None
+
+    parsed: list[dict[str, str]] = []
+    for item in raw:
+        parsed_filter = _parse_attribute_filters(item)
+        if parsed_filter:
+            parsed.append(parsed_filter)
+    return parsed or None
+
+
+def _normalize_path_list(raw: Any) -> list[Path] | None:
+    if raw is None:
+        return None
+
+    if isinstance(raw, (str, Path)):
+        return [Path(raw)]
+
+    if isinstance(raw, list):
+        paths: list[Path] = []
+        for item in raw:
+            if item is None:
+                continue
+            paths.append(Path(item))
+        return paths or None
+    return None
+
+
+def _normalize_str_list(raw: Any) -> list[str] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        values = [str(item) for item in raw if item is not None]
+        return values or None
+    if isinstance(raw, (str, Path)):
+        return [str(raw)]
+    return None
+
+
+def _normalize_filter_sets(raw: Any) -> list[dict[str, str]] | None:
+    if raw is None:
+        return None
+
+    candidates = raw if isinstance(raw, list) else [raw]
+    parsed: list[dict[str, str]] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            filt = {str(k): str(v) for k, v in item.items() if v is not None}
+            if filt:
+                parsed.append(filt)
+        elif isinstance(item, list):
+            filter_dict = _parse_attribute_filters([str(x) for x in item])
+            if filter_dict:
+                parsed.append(filter_dict)
+        elif isinstance(item, (str, Path)):
+            filter_dict = _parse_attribute_filters([str(item)])
+            if filter_dict:
+                parsed.append(filter_dict)
+    return parsed or None
+
+
 def _lookup(config: Dict[str, Any] | None, *keys: str) -> Any:
     current: Any = config or {}
     for key in keys:
@@ -82,10 +147,10 @@ def _lookup(config: Dict[str, Any] | None, *keys: str) -> Any:
     return current
 
 
-def _load_pipeline_config(config_path: Optional[Path]) -> Dict[str, Any]:
+def _load_config(config_path: Optional[Path], default_path: Path) -> Dict[str, Any]:
     path_to_load = config_path
-    if path_to_load is None and DEFAULT_CONFIG_PATH.exists():
-        path_to_load = DEFAULT_CONFIG_PATH
+    if path_to_load is None and default_path.exists():
+        path_to_load = default_path
 
     if path_to_load is None:
         return {}
@@ -167,17 +232,25 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
     model_path = _resolve_path(args.model, yolo_cfg.get("model_path"), Path("yoloe-11l-seg.pt"))
     threshold = args.threshold if args.threshold is not None else yolo_cfg.get("threshold", 0.5)
     visualize = _coerce_bool(args.visualize, yolo_cfg.get("visualize"), False)
-    visualization_dir = _resolve_path(
-        args.viz_dir,
-        yolo_cfg.get("visualization_dir"),
-        Path("yoloe_visualizations"),
-    )
-    output_jsonl = _resolve_path(args.output, yolo_cfg.get("output_jsonl"), Path("yoloe_output.jsonl"))
     attribute_filters = (
         _parse_attribute_filters(args.attribute_filter)
         if args.attribute_filter is not None
         else yolo_cfg.get("attribute_filters")
     )
+    default_output = Path("yoloe_output.jsonl")
+    default_visualizations = Path("yoloe_visualizations")
+    if attribute_filters:
+        stage_dir = filtered_stage_dir("yoloe", attribute_filters)
+        default_output = stage_dir / default_output
+        default_visualizations = stage_dir / default_visualizations
+
+    visualization_dir = _resolve_path(
+        args.viz_dir,
+        yolo_cfg.get("visualization_dir"),
+        default_visualizations,
+    )
+
+    output_jsonl = _resolve_path(args.output, yolo_cfg.get("output_jsonl"), default_output)
     dataset_image_root = _resolve_path(
         None, _lookup(config, "dataset", "image_root"), None
     )
@@ -186,7 +259,7 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
         model_path=model_path,
         threshold=threshold,
         visualize=visualize,
-        visualization_dir=visualization_dir,
+        visualization_dir=visualization_dir or default_visualizations,
         output_jsonl=output_jsonl,
         attribute_filters=attribute_filters,
         dataset_image_root=dataset_image_root,
@@ -211,17 +284,32 @@ def _build_gemini_config(
     scene_level = scene_level_arg if scene_level_arg is not None else gemini_cfg.get("scene_directory_level", 1)
     max_bytes_arg = _arg_value(args, "max_bytes")
     max_batch_size = max_bytes_arg if max_bytes_arg is not None else gemini_cfg.get("max_batch_size_bytes", 1.85 * 1024 ** 3)
+    base_batch_dir = Path("gemini_batches")
+    base_jobs_file = Path("gemini_jobs.json")
+    base_final_output = Path("gemini_output.jsonl")
+    attribute_filters = (
+        _parse_attribute_filters(_arg_value(args, "attribute_filter"))
+        if _arg_value(args, "attribute_filter") is not None
+        else gemini_cfg.get("attribute_filters")
+    )
+
+    if attribute_filters:
+        stage_dir = filtered_stage_dir("gemini", attribute_filters)
+        base_batch_dir = stage_dir / base_batch_dir
+        base_jobs_file = stage_dir / base_jobs_file
+        base_final_output = stage_dir / base_final_output
+
     output_batch_dir = _resolve_path(
         _arg_value(args, "batch_dir"),
         gemini_cfg.get("output_batch_dir"),
-        Path("gemini_batches"),
+        base_batch_dir,
     )
     gcs_arg = _arg_value(args, "gcs_bucket")
     gcs_bucket = gcs_arg if gcs_arg is not None else gemini_cfg.get("gcs_bucket")
     submitted_jobs_file = _resolve_path(
         _arg_value(args, "jobs_file"),
         gemini_cfg.get("submitted_jobs_file"),
-        Path("gemini_jobs.json"),
+        base_jobs_file,
     )
     project_arg = _arg_value(args, "project")
     project = project_arg if project_arg is not None else gemini_cfg.get("project")
@@ -232,12 +320,7 @@ def _build_gemini_config(
     final_output = _resolve_path(
         _arg_value(args, "final_output"),
         gemini_cfg.get("final_output_jsonl"),
-        Path("gemini_output.jsonl"),
-    )
-    attribute_filters = (
-        _parse_attribute_filters(_arg_value(args, "attribute_filter"))
-        if _arg_value(args, "attribute_filter") is not None
-        else gemini_cfg.get("attribute_filters")
+        base_final_output,
     )
 
     return GeminiConfig(
@@ -375,9 +458,37 @@ def main():
         help="Only include Gemini outputs whose attributes match all provided filters",
     )
 
+    json_parser = subparsers.add_parser("json-utils", help="Inspect and merge pipeline JSONL files")
+    json_subparsers = json_parser.add_subparsers(dest="json_command", required=True)
+
+    list_parser = json_subparsers.add_parser("list-values", help="List unique values for attributes")
+    list_parser.add_argument("inputs", nargs="*", type=Path, help="Input JSONL files (or defaults from config)")
+    list_parser.add_argument("--attributes", nargs="*", help="Attributes to inspect (or defaults from config)")
+
+    summary_parser = json_subparsers.add_parser("summarize", help="Summarize attribute distributions")
+    summary_parser.add_argument("inputs", nargs="*", type=Path, help="Input JSONL files (or defaults from config)")
+    summary_parser.add_argument("--attributes", nargs="*", help="Attributes to summarize (or defaults from config)")
+    summary_parser.add_argument(
+        "--filter",
+        action="append",
+        nargs="*",
+        metavar="NAME=VALUE",
+        help="Optional filters to count coverage for (provide multiple groups for multiple filters)",
+    )
+
+    merge_parser = json_subparsers.add_parser("merge-filtered", help="Merge filter-specific outputs")
+    merge_parser.add_argument("stage", nargs="?", help="Pipeline stage name (e.g. yoloe or gemini)")
+    merge_parser.add_argument(
+        "--filename",
+        help="Name of the file to merge from each filter directory (defaults to the stage's primary output)",
+    )
+    merge_parser.add_argument("--base-dir", type=Path, help="Base filters directory (or default from config)")
+    merge_parser.add_argument("--output", type=Path, help="Destination merged JSONL path")
+
     args = parser.parse_args()
 
-    config_data = _load_pipeline_config(args.config)
+    default_config_path = DEFAULT_JSON_UTILS_CONFIG_PATH if args.command == "json-utils" else DEFAULT_CONFIG_PATH
+    config_data = _load_config(args.config, default_config_path)
 
     log_file = _configure_logging(args.verbose, args.command)
     logging.getLogger(__name__).info("Logs will be written to %s", log_file)
@@ -429,6 +540,44 @@ def main():
             raise ValueError("--original-index must be provided via CLI or config file")
         output = parse_gemini_output(args.outputs, original_index, config)
         print(f"Wrote parsed Gemini output to {output}")
+
+    elif args.command == "json-utils":
+        json_cfg = config_data.get("json_utils", {}) if isinstance(config_data, dict) else {}
+
+        if args.json_command == "list-values":
+            defaults = json_cfg.get("list_values", {}) if isinstance(json_cfg, dict) else {}
+            inputs = args.inputs or _normalize_path_list(defaults.get("inputs"))
+            attributes = args.attributes or _normalize_str_list(defaults.get("attributes"))
+            if not inputs:
+                raise ValueError("At least one input JSONL must be provided via CLI or config file")
+            if not attributes:
+                raise ValueError("At least one attribute must be provided via CLI or config file")
+            result = list_attribute_values(inputs, attributes)
+            print(json.dumps(result, indent=2))
+        elif args.json_command == "summarize":
+            defaults = json_cfg.get("summarize", {}) if isinstance(json_cfg, dict) else {}
+            inputs = args.inputs or _normalize_path_list(defaults.get("inputs"))
+            attributes = args.attributes or _normalize_str_list(defaults.get("attributes"))
+            filters_cfg = _normalize_filter_sets(defaults.get("filters")) if isinstance(defaults, dict) else None
+            filter_sets = _parse_filter_sets(args.filter) or filters_cfg
+            if not inputs:
+                raise ValueError("At least one input JSONL must be provided via CLI or config file")
+            if not attributes:
+                raise ValueError("At least one attribute must be provided via CLI or config file")
+            result = summarize_attributes(inputs, attributes, filter_sets)
+            print(json.dumps(result, indent=2))
+        elif args.json_command == "merge-filtered":
+            defaults = json_cfg.get("merge_filtered", {}) if isinstance(json_cfg, dict) else {}
+            stage = args.stage or (defaults.get("stage") if isinstance(defaults, dict) else None)
+            if not stage:
+                raise ValueError("Stage must be provided via CLI or config file")
+            filename = args.filename if args.filename is not None else (defaults.get("filename") if isinstance(defaults, dict) else None)
+            base_dir_raw = args.base_dir if args.base_dir is not None else (defaults.get("base_dir") if isinstance(defaults, dict) else None)
+            base_dir = Path(base_dir_raw) if base_dir_raw is not None else Path("filters")
+            output_raw = args.output if args.output is not None else (defaults.get("output") if isinstance(defaults, dict) else None)
+            output_path = Path(output_raw) if output_raw is not None else None
+            output = merge_filtered_outputs(stage, filename, base_dir, output_path)
+            print(json.dumps({"output": str(output)}, indent=2))
 
 
 if __name__ == "__main__":

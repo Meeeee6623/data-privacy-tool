@@ -203,6 +203,19 @@ def _scene_root(image_path: Path, levels_up: int) -> Path:
     return current
 
 
+def _load_scene_attributes(original_index: Optional[Path], config: GeminiConfig) -> Dict[str, Dict]:
+    if not original_index or not original_index.exists():
+        return {}
+
+    scene_to_attributes: Dict[str, Dict] = {}
+    for record in _load_yolo_output(original_index):
+        if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
+            continue
+        scene_path = str(_scene_root(Path(record["image_path"]), config.scene_directory_level))
+        scene_to_attributes.setdefault(scene_path, record.get("attributes", {}))
+    return scene_to_attributes
+
+
 def collect_flagged_scenes(yolo_output: Path, config: GeminiConfig) -> Dict[Path, List[str]]:
     all_images: Dict[Path, List[str]] = defaultdict(list)
     flagged_scenes: set[Path] = set()
@@ -371,6 +384,27 @@ def clean_gemini_logs(
     normalized_descriptions = dict(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
     normalized_descriptions.update(_normalize_category_descriptions(category_descriptions))
 
+    def _clean_record(record: Dict | None) -> Dict:
+        request = record.get("request") if isinstance(record, dict) else None
+        response = record.get("response") if isinstance(record, dict) else None
+
+        cleaned_record = dict(record) if isinstance(record, dict) else {"raw": record}
+        cleaned_record["request"] = _strip_inline_images(request)
+
+        response_text = _extract_response_text(response)
+        cleaned_record["response_text"] = response_text
+        categories = _extract_flag_categories(response_text, normalized_allowed)
+        cleaned_record["flag_categories"] = categories
+        category_details = {
+            category: normalized_descriptions.get(category)
+            for category in categories
+            if category in normalized_descriptions
+        }
+        if category_details:
+            cleaned_record["flag_category_descriptions"] = category_details
+        cleaned_record["is_flagged"] = bool(FLAG_PATTERN.search(response_text or ""))
+        return cleaned_record
+
     cleaned_files: List[Path] = []
     for batch_output in batch_outputs:
         cleaned_path = cleaned_dir / batch_output.name
@@ -380,25 +414,7 @@ def clean_gemini_logs(
                     continue
 
                 record = _load_json_line(line)
-                request = record.get("request") if isinstance(record, dict) else None
-                response = record.get("response") if isinstance(record, dict) else None
-
-                cleaned_record = dict(record) if isinstance(record, dict) else {"raw": record}
-                cleaned_record["request"] = _strip_inline_images(request)
-
-                response_text = _extract_response_text(response)
-                cleaned_record["response_text"] = response_text
-                categories = _extract_flag_categories(response_text, normalized_allowed)
-                cleaned_record["flag_categories"] = categories
-                category_details = {
-                    category: normalized_descriptions.get(category)
-                    for category in categories
-                    if category in normalized_descriptions
-                }
-                if category_details:
-                    cleaned_record["flag_category_descriptions"] = category_details
-                cleaned_record["is_flagged"] = bool(FLAG_PATTERN.search(response_text or ""))
-
+                cleaned_record = _clean_record(record)
                 outfile.write(_dump_json_line(cleaned_record) + b"\n")
 
         cleaned_files.append(cleaned_path)
@@ -408,13 +424,87 @@ def clean_gemini_logs(
     return cleaned_files
 
 
+def clean_and_merge_gemini_logs(
+    batch_outputs: List[Path],
+    merged_output: Path,
+    config: GeminiConfig,
+    original_index: Optional[Path] = None,
+    allowed_categories: Optional[Iterable[str]] = None,
+    category_descriptions: Optional[Mapping[str, str]] = None,
+) -> Path:
+    merged_output.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized_allowed = _normalize_flag_categories(allowed_categories)
+    if not normalized_allowed and category_descriptions:
+        normalized_allowed = _normalize_flag_categories(category_descriptions.keys())
+    if not normalized_allowed:
+        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
+    normalized_descriptions = dict(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
+    normalized_descriptions.update(_normalize_category_descriptions(category_descriptions))
+
+    scene_attributes = _load_scene_attributes(original_index, config)
+
+    def _clean_record(record: Dict | None) -> Dict:
+        request = record.get("request") if isinstance(record, dict) else None
+        response = record.get("response") if isinstance(record, dict) else None
+
+        response_text = _extract_response_text(response)
+        categories = _extract_flag_categories(response_text, normalized_allowed)
+        return {
+            "scene_path": record.get("key") if isinstance(record, dict) else None,
+            "response_text": response_text,
+            "flag_categories": categories,
+            "is_flagged": bool(FLAG_PATTERN.search(response_text or "")),
+            "flag_category_descriptions": {
+                category: normalized_descriptions.get(category)
+                for category in categories
+                if category in normalized_descriptions
+            }
+            or None,
+            "request": _strip_inline_images(request),
+        }
+
+    with merged_output.open("wb") as outfile:
+        cleaned_count = 0
+        for batch_output in batch_outputs:
+            if not batch_output.exists():
+                logger.warning("Batch output %s does not exist; skipping", batch_output)
+                continue
+            with batch_output.open() as infile:
+                for line in infile:
+                    if not line.strip():
+                        continue
+
+                    record = _load_json_line(line)
+                    cleaned_record = _clean_record(record)
+                    scene_path = cleaned_record.get("scene_path")
+                    attributes = scene_attributes.get(scene_path, {}) if scene_path else {}
+
+                    merged_record = {
+                        "scene_path": scene_path,
+                        "attributes": attributes,
+                        "response_text": cleaned_record.get("response_text"),
+                        "flag_categories": cleaned_record.get("flag_categories", []),
+                        "is_flagged": cleaned_record.get("is_flagged", False),
+                    }
+
+                    flag_descriptions = cleaned_record.get("flag_category_descriptions")
+                    if flag_descriptions:
+                        merged_record["flag_category_descriptions"] = flag_descriptions
+
+                    request = cleaned_record.get("request")
+                    if request:
+                        merged_record["request"] = request
+
+                    outfile.write(_dump_json_line(merged_record) + b"\n")
+                    cleaned_count += 1
+
+    logger.info("Merged and cleaned %d Gemini records into %s", cleaned_count, merged_output)
+    return merged_output
+
+
 def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config: GeminiConfig) -> Path:
-    scene_to_attributes: Dict[str, Dict] = {}
-    for record in _load_yolo_output(original_index):
-        if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
-            continue
-        scene_path = str(_scene_root(Path(record["image_path"]), config.scene_directory_level))
-        scene_to_attributes.setdefault(scene_path, record.get("attributes", {}))
+    scene_to_attributes = _load_scene_attributes(original_index, config)
 
     parsed: List[Dict] = []
     for batch_output in batch_outputs:

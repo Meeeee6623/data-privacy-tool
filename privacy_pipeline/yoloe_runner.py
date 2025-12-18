@@ -127,7 +127,7 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
                         logger.debug("Could not derive relative path for %s from %s", image_path, common_root)
                 relative_image = relative_image or Path(image_path.name)
 
-                viz_path = viz_dir / relative_image.with_name(f"{relative_image.stem}_yoloe.png")
+                viz_path = viz_dir / relative_image.with_name(f"{relative_image.stem}.png")
                 viz_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.fromarray(plotted[..., ::-1]).save(viz_path)
                 visualization_path = str(viz_path)

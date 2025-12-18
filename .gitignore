@@ -219,3 +219,5 @@ uv.lock
 *.ts
 
 config.yaml
+
+data/

@@ -58,7 +58,7 @@ gemini:
   project: your-gcp-project
   # Optional location and model overrides
   location: us-central1
-  model: gemini-2.0-flash
+  model: gemini-2.5-flash
   # Path where submitted job names are tracked
   submitted_jobs_file: gemini_jobs.json
   # Final parsed output JSONL path

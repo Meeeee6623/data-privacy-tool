@@ -14,5 +14,5 @@ summarize:
 
 merge_filtered:
   stage: yoloe
-  base_dir: filters
+  base_dir: filtered
   output: merged_yoloe_output.jsonl

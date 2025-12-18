@@ -23,4 +23,4 @@ def filter_slug(filters: Optional[Dict[str, str]]) -> str:
 def filtered_stage_dir(stage: str, filters: Optional[Dict[str, str]]) -> Path:
     """Return the directory to store outputs for a filter-specific run."""
 
-    return Path("filters") / stage / filter_slug(filters)
+    return Path("filtered") / stage / filter_slug(filters)

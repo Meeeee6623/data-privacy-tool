@@ -75,7 +75,7 @@ def summarize_attributes(
 
 
 def merge_filtered_outputs(
-    stage: str, filename: Optional[str] = None, base_dir: Path = Path("filters"), output_path: Optional[Path] = None
+    stage: str, filename: Optional[str] = None, base_dir: Path = Path("filtered"), output_path: Optional[Path] = None
 ) -> Path:
     """Merge filter-specific JSONL files for a pipeline stage into a single output."""
 
@@ -86,9 +86,14 @@ def merge_filtered_outputs(
         "index": "image_index.jsonl",
     }.get(stage, f"{stage}.jsonl")
 
-    candidates = sorted(stage_dir.glob(f"*/{resolved_filename}"))
+    direct_candidates = list(stage_dir.glob("*.jsonl")) if stage_dir.exists() else []
+    nested_candidates = sorted(stage_dir.glob(f"*/{resolved_filename}")) if stage_dir.exists() else []
+
+    candidates = sorted(direct_candidates) if direct_candidates else nested_candidates
     if not candidates:
-        raise FileNotFoundError(f"No filtered outputs found under {stage_dir} for {resolved_filename}")
+        raise FileNotFoundError(
+            f"No filtered outputs found under {stage_dir} for {resolved_filename} or direct JSONL files"
+        )
 
     destination = output_path or Path(resolved_filename)
     destination.parent.mkdir(parents=True, exist_ok=True)

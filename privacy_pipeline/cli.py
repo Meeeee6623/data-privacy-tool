@@ -302,7 +302,7 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
     default_visualizations = Path("yoloe_visualizations")
     if attribute_filters:
         stage_dir = filtered_stage_dir("yoloe", attribute_filters)
-        default_output = stage_dir / default_output
+        default_output = stage_dir.with_suffix(".jsonl")
         default_visualizations = stage_dir / default_visualizations
 
     visualization_dir = _resolve_path(
@@ -732,7 +732,7 @@ def main():
                 raise ValueError("Stage must be provided via CLI or config file")
             filename = args.filename if args.filename is not None else (defaults.get("filename") if isinstance(defaults, dict) else None)
             base_dir_raw = args.base_dir if args.base_dir is not None else (defaults.get("base_dir") if isinstance(defaults, dict) else None)
-            base_dir = Path(base_dir_raw) if base_dir_raw is not None else Path("filters")
+            base_dir = Path(base_dir_raw) if base_dir_raw is not None else Path("filtered")
             output_raw = args.output if args.output is not None else (defaults.get("output") if isinstance(defaults, dict) else None)
             output_path = Path(output_raw) if output_raw is not None else None
             output = merge_filtered_outputs(stage, filename, base_dir, output_path)

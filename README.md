@@ -144,7 +144,7 @@ summarize:
 
 merge_filtered:
   stage: yoloe
-  base_dir: filters
+  base_dir: filtered
   output: merged_yoloe_output.jsonl
 ```
 
@@ -171,6 +171,7 @@ Notes:
   are sent for OCR/classification.
 - `--max-bytes` can be adjusted if GCP batch limits change (default 1.85 GB).
 - When attribute filters are provided for YOLOE or Gemini, outputs are stored
-  under `filters/<stage>/<filter-slug>/` so parallel filtered runs cannot
-  clobber each other. Use `json-utils merge-filtered <stage>` to combine the
-  filtered JSONL files back into a single stage output.
+  under `filtered/<stage>/` using the filter slug in the filename (e.g.,
+  `filtered/yoloe/lab-alpha.jsonl`) so parallel filtered runs cannot clobber
+  each other. Use `json-utils merge-filtered <stage>` to combine the filtered
+  JSONL files back into a single stage output.

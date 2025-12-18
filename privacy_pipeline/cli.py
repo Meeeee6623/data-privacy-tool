@@ -9,14 +9,15 @@ import yaml
 from privacy_pipeline.config import DatasetConfig, GeminiConfig, YoloEConfig
 from privacy_pipeline.dataset_index import build_image_index
 from privacy_pipeline.json_utils import list_attribute_values, merge_filtered_outputs, summarize_attributes
-from privacy_pipeline.utils import filtered_stage_dir
+from privacy_pipeline.utils import filter_slug, filtered_stage_dir
 from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
+    clean_and_merge_gemini_logs,
+    clean_gemini_logs,
     collect_flagged_scenes,
     create_gemini_batches,
     download_completed_jobs,
     get_gemini_job_status,
-    clean_gemini_logs,
     parse_gemini_output,
     submit_gemini_batches,
 )
@@ -166,6 +167,25 @@ def _normalize_filter_sets(raw: Any) -> list[dict[str, str]] | None:
             if filter_dict:
                 parsed.append(filter_dict)
     return parsed or None
+
+
+def _determine_filter_slug(args: argparse.Namespace, config: Dict[str, Any]) -> Optional[str]:
+    filters: Optional[dict[str, str]] = None
+    if args.command == "yoloe":
+        filters = (
+            _parse_attribute_filters(args.attribute_filter)
+            if args.attribute_filter is not None
+            else _lookup(config, "yoloe", "attribute_filters")
+        )
+    elif args.command in {"prepare-gemini", "submit-gemini", "check-gemini", "download-gemini", "parse-gemini"}:
+        raw_filters = _arg_value(args, "attribute_filter")
+        filters = (
+            _parse_attribute_filters(raw_filters)
+            if raw_filters is not None
+            else _lookup(config, "gemini", "attribute_filters")
+        )
+
+    return filter_slug(filters) if filters else None
 
 
 def _lookup(config: Dict[str, Any] | None, *keys: str) -> Any:
@@ -454,10 +474,12 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _configure_logging(verbose: bool, command: str) -> Path:
+def _configure_logging(verbose: bool, command: str, filter_slug: Optional[str] = None) -> Path:
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_suffix = command.replace("-", "_") if command else "privacy_pipeline"
+    if filter_slug:
+        log_suffix = f"{log_suffix}_{filter_slug}"
     log_file = log_dir / f"{log_suffix}.log"
 
     console_level = logging.DEBUG if verbose else logging.INFO
@@ -525,6 +547,7 @@ def main():
     download_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
     download_parser.add_argument("--output-dir", type=Path, help="Directory to store downloaded outputs")
     download_parser.add_argument("--cleaned-dir", type=Path, help="Directory to store cleaned logs")
+    download_parser.add_argument("--original-index", type=Path, help="Image index JSONL for attaching attributes")
     download_parser.add_argument("--project")
     download_parser.add_argument("--location")
     download_parser.add_argument(
@@ -583,7 +606,8 @@ def main():
     default_config_path = DEFAULT_JSON_UTILS_CONFIG_PATH if args.command == "json-utils" else DEFAULT_CONFIG_PATH
     config_data = _load_config(args.config, default_config_path)
 
-    log_file = _configure_logging(args.verbose, args.command)
+    filter_suffix = _determine_filter_slug(args, config_data)
+    log_file = _configure_logging(args.verbose, args.command, filter_suffix)
     logging.getLogger(__name__).info("Logs will be written to %s", log_file)
 
     if args.command == "index":
@@ -633,20 +657,36 @@ def main():
         job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
         stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
         output_dir = _resolve_path(args.output_dir, None, stage_root / "gemini_outputs")
-        cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root / "gemini_outputs_clean")
+        cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root)
+        merged_clean_output = cleaned_dir / "gemini_output_cleaned.jsonl"
+        original_index = _resolve_path(
+            args.original_index,
+            _lookup(config_data, "dataset", "output_jsonl"),
+            default=None,
+        )
 
         downloaded = download_completed_jobs(job_names, output_dir, config)
         cleaned = (
-            clean_gemini_logs(
+            clean_and_merge_gemini_logs(
                 downloaded,
-                cleaned_dir,
+                merged_clean_output,
+                config,
+                original_index=original_index,
                 allowed_categories=config.flag_categories,
                 category_descriptions=config.flag_category_descriptions,
             )
             if downloaded
-            else []
+            else None
         )
-        print(json.dumps({"downloaded": [str(p) for p in downloaded], "cleaned": [str(p) for p in cleaned]}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "downloaded": [str(p) for p in downloaded],
+                    "cleaned": [str(cleaned)] if cleaned else [],
+                },
+                indent=2,
+            )
+        )
 
     elif args.command == "parse-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)

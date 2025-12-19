@@ -83,7 +83,7 @@ gemini:
   # Optional filters to restrict which detections are forwarded
   attribute_filters:
     scene: scene-01
-  # Optional override for allowed #FLAG categories
+  # Optional override for allowed #FLAG categories, should match the prompt. Defaults are shown below:
   flag_categories:
     - PII
     - CONFIDENTIAL_INFO

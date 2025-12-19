@@ -469,12 +469,6 @@ def _build_gemini_config(
     location = location_arg if location_arg is not None else gemini_cfg.get("location", "us-central1")
     model_arg = _arg_value(args, "model")
     model = model_arg if model_arg is not None else gemini_cfg.get("model", "gemini-2.0-flash")
-    flag_categories_arg = _arg_value(args, "flag_categories")
-    flag_categories = (
-        _normalize_str_list(flag_categories_arg)
-        if flag_categories_arg is not None
-        else _normalize_str_list(gemini_cfg.get("flag_categories"))
-    )
     final_output = _resolve_path(
         _arg_value(args, "final_output"),
         gemini_cfg.get("final_output_jsonl"),
@@ -497,7 +491,6 @@ def _build_gemini_config(
         model=model,
         final_output_jsonl=final_output,
         attribute_filters=attribute_filters,
-        flag_categories=flag_categories,
     )
     _log_stage_config("Gemini", gemini_config)
     return gemini_config
@@ -545,11 +538,6 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", type=str)
     parser.add_argument("--jobs-file", type=Path)
     parser.add_argument("--final-output", type=Path)
-    parser.add_argument(
-        "--flag-categories",
-        nargs="*",
-        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
-    )
     parser.add_argument(
         "--attribute-filter",
         nargs="*",
@@ -636,11 +624,6 @@ def main():
     clean_parser.add_argument("--outputs-dir", type=Path, help="Directory containing downloaded Gemini outputs")
     clean_parser.add_argument("--output", type=Path, help="Destination cleaned JSONL path")
     clean_parser.add_argument("--original-index", type=Path, help="Image index JSONL for attaching attributes")
-    clean_parser.add_argument(
-        "--flag-categories",
-        nargs="*",
-        help="Optional list of allowed #FLAG categories (defaults to built-in set)",
-    )
     clean_parser.add_argument(
         "--attribute-filter",
         nargs="*",
@@ -778,7 +761,6 @@ def main():
             merged_clean_output,
             config,
             original_index=original_index,
-            allowed_categories=config.flag_categories,
         )
         print(
             json.dumps(

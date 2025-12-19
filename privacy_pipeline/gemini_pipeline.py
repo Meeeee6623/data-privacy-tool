@@ -23,14 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 FLAG_PATTERN = re.compile(r"#FLAG\s*\[?([^\]\n]+)\]?")
-DEFAULT_FLAG_CATEGORIES = {
-    "PII",
-    "CONFIDENTIAL_INFO",
-    "SECURITY_INFO",
-    "MACHINE_READABLE_CODE",
-    "BRANDING_LOGOS",
-    "OTHER",
-}
 
 
 class GeminiJobRecord(TypedDict):
@@ -87,34 +79,14 @@ def _extract_response_text(response: Dict | None) -> str | None:
     return None
 
 
-def _normalize_flag_categories(categories: Iterable[str] | None) -> set[str]:
-    if not categories:
-        return set()
-    normalized = set()
-    for category in categories:
-        normalized_name = str(category).strip().upper().replace(" ", "_")
-        if normalized_name:
-            normalized.add(normalized_name)
-    return normalized
-
-
-def _extract_flag_categories(text: str | None, allowed_categories: Optional[set[str]] = None) -> list[str]:
+def _extract_flag_categories(text: str | None) -> list[str]:
     if not text:
         return []
     match = FLAG_PATTERN.search(text)
     if not match:
         return []
     raw_categories = re.split(r"[\s,]+", match.group(1))
-    categories: list[str] = []
-    normalized_allowed = allowed_categories or _normalize_flag_categories(DEFAULT_FLAG_CATEGORIES)
-    for category in raw_categories:
-        normalized = category.strip().upper().replace(" ", "_")
-        if not normalized:
-            continue
-        if normalized_allowed and normalized not in normalized_allowed:
-            continue
-        categories.append(normalized)
-    return categories
+    return [category.strip() for category in raw_categories if category and category.strip()]
 
 
 def _scene_root(image_path: Path, levels_up: int) -> Path:
@@ -337,13 +309,8 @@ def clean_and_merge_gemini_logs(
     merged_output: Path,
     config: GeminiConfig,
     original_index: Optional[Path] = None,
-    allowed_categories: Optional[Iterable[str]] = None,
 ) -> Path:
     merged_output.parent.mkdir(parents=True, exist_ok=True)
-
-    normalized_allowed = _normalize_flag_categories(allowed_categories)
-    if not normalized_allowed:
-        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORIES)
 
     scene_attributes = _load_scene_attributes(original_index, config)
 
@@ -351,7 +318,7 @@ def clean_and_merge_gemini_logs(
         response = record.get("response") if isinstance(record, dict) else None
 
         response_text = _extract_response_text(response)
-        categories = _extract_flag_categories(response_text, normalized_allowed)
+        categories = _extract_flag_categories(response_text)
         return {
             "scene_path": record.get("key") if isinstance(record, dict) else None,
             "response_text": response_text,

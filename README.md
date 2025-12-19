@@ -127,7 +127,6 @@ gemini:
   project: your-gcp-project
   submitted_jobs_file: gemini_jobs.json
   final_output_jsonl: gemini_output.jsonl
-  flag_categories: [PII, CONFIDENTIAL_INFO, SECURITY_INFO]
 ```
 
 Example `json_utils.config.yaml`:
@@ -153,8 +152,6 @@ merge_filtered:
 With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
 loads defaults from `config.yaml` automatically and only needs CLI overrides
 for values that should differ from the file.
-step, so teams can align Gemini `#FLAG[...]` markers with their own taxonomy
-without code changes.
 
 The YOLOE runner automatically downloads the requested checkpoint (defaulting to
 `yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`

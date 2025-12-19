@@ -49,7 +49,6 @@ class GeminiConfig:
     location: str = "us-central1"
     model: str = "gemini-2.0-flash"
     attribute_filters: Optional[Dict[str, str]] = None
-    flag_categories: Optional[List[str]] = None
 
 
 @dataclass

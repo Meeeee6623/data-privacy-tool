@@ -41,6 +41,8 @@ class GeminiConfig:
     max_batch_size_bytes: float = 1.85 * 1024 ** 3
     output_batch_dir: Path = Path("gemini_batches")
     gcs_bucket: Optional[str] = None
+    gcs_output_bucket: Optional[str] = None
+    gcs_output_prefix: str = "gemini_outputs"
     submitted_jobs_file: Path = Path("gemini_jobs.json")
     final_output_jsonl: Path = Path("gemini_output.jsonl")
     project: Optional[str] = None
@@ -48,7 +50,6 @@ class GeminiConfig:
     model: str = "gemini-2.0-flash"
     attribute_filters: Optional[Dict[str, str]] = None
     flag_categories: Optional[List[str]] = None
-    flag_category_descriptions: Optional[Dict[str, str]] = None
 
 
 @dataclass

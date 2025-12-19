@@ -25,8 +25,8 @@ Key steps:
    Gemini OCR output.
 4. **Download and clean Gemini logs** – Pull completed batch outputs directly
    from GCS, strip inline image payloads, parse `#FLAG[...]` markers with
-   customizable categories/descriptions, and emit cleaned JSONL/CSV files for
-   downstream analysis.
+   customizable categories, and emit cleaned JSONL/CSV files for downstream
+   analysis.
 
 ## CLI usage
 Commands are provided via `python -m privacy_pipeline.cli`:
@@ -52,11 +52,14 @@ python -m privacy_pipeline.cli prepare-gemini yoloe_output.jsonl \
 
 # 4) Submit batches (requires GCP access)
 python -m privacy_pipeline.cli submit-gemini gemini_batches \
-  --gcs-bucket your-bucket --project your-gcp-project
+  --gcs-bucket your-bucket --gcs-output-bucket your-output-bucket \
+  --project your-gcp-project
 
 # 4b) Check batch job status (names or stored jobs file)
 python -m privacy_pipeline.cli status-gemini --jobs-file gemini_jobs.json
 python -m privacy_pipeline.cli status-gemini jobname-123 another-job
+# The jobs file stores objects of the form {"name": "...", "output_uri": "gs://..."}
+# so downloads can use the recorded destinations directly.
 
 # 5) Parse Gemini outputs
 python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
@@ -65,8 +68,7 @@ python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
 
 # 6) Download and clean Gemini logs once jobs finish
 python -m privacy_pipeline.cli download-gemini --jobs-file gemini_jobs.json \
-  --output-dir gemini_logs --categories PII CONFIDENTIAL_INFO --category-descriptions \
-  "PII:Personal identifiers" "CONFIDENTIAL_INFO:Sensitive company data"
+  --output-dir gemini_logs --flag-categories PII CONFIDENTIAL_INFO
 
 # Inspect or merge JSONL files
 python -m privacy_pipeline.cli json-utils list-values image_index.jsonl --attributes lab building
@@ -118,14 +120,12 @@ gemini:
   max_batch_size_bytes: 1981808640
   output_batch_dir: gemini_batches
   gcs_bucket: your-bucket
+  gcs_output_bucket: your-output-bucket
+  gcs_output_prefix: gemini_outputs
   project: your-gcp-project
   submitted_jobs_file: gemini_jobs.json
   final_output_jsonl: gemini_output.jsonl
   flag_categories: [PII, CONFIDENTIAL_INFO, SECURITY_INFO]
-  flag_category_descriptions:
-    PII: Personal identifiers
-    CONFIDENTIAL_INFO: Sensitive company data
-    SECURITY_INFO: Credentials or auth secrets
 ```
 
 Example `json_utils.config.yaml`:
@@ -151,8 +151,6 @@ merge_filtered:
 With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
 loads defaults from `config.yaml` automatically and only needs CLI overrides
 for values that should differ from the file.
-
-Custom flag categories and descriptions flow through to the download-and-clean
 step, so teams can align Gemini `#FLAG[...]` markers with their own taxonomy
 without code changes.
 

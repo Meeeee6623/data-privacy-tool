@@ -1,8 +1,10 @@
 import argparse
 import json
 import logging
+import shlex
+from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -12,8 +14,8 @@ from privacy_pipeline.json_utils import list_attribute_values, merge_filtered_ou
 from privacy_pipeline.utils import filter_slug, filtered_stage_dir
 from privacy_pipeline.yoloe_runner import run_yoloe
 from privacy_pipeline.gemini_pipeline import (
+    GeminiJobRecord,
     clean_and_merge_gemini_logs,
-    clean_gemini_logs,
     collect_flagged_scenes,
     create_gemini_batches,
     download_completed_jobs,
@@ -25,6 +27,24 @@ from privacy_pipeline.gemini_pipeline import (
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 DEFAULT_JSON_UTILS_CONFIG_PATH = Path("json_utils.config.yaml")
+
+PIPELINE_SUCCESSORS: dict[str, str] = {
+    "index": "yoloe",
+    "yoloe": "prepare-gemini",
+    "prepare-gemini": "submit-gemini",
+    "submit-gemini": "check-gemini",
+    "check-gemini": "download-gemini",
+    "download-gemini": "parse-gemini",
+}
+
+FILTER_STAGE_NAMES: dict[str, str] = {
+    "yoloe": "yoloe",
+    "prepare-gemini": "gemini",
+    "submit-gemini": "gemini",
+    "check-gemini": "gemini",
+    "download-gemini": "gemini",
+    "parse-gemini": "gemini",
+}
 
 
 def _add_common_index_args(parser: argparse.ArgumentParser) -> None:
@@ -120,33 +140,6 @@ def _normalize_str_list(raw: Any) -> list[str] | None:
     return None
 
 
-def _parse_category_descriptions(raw: Any) -> dict[str, str] | None:
-    if raw is None:
-        return None
-
-    if isinstance(raw, dict):
-        parsed = {str(k): str(v) for k, v in raw.items() if k}
-        return parsed or None
-
-    if isinstance(raw, list):
-        parsed: dict[str, str] = {}
-        for item in raw:
-            if not isinstance(item, str) or ":" not in item:
-                continue
-            name, description = item.split(":", 1)
-            if name:
-                parsed[name] = description
-        return parsed or None
-
-    if isinstance(raw, (str, Path)):
-        text = str(raw)
-        if ":" in text:
-            name, description = text.split(":", 1)
-            if name:
-                return {name: description}
-    return None
-
-
 def _normalize_filter_sets(raw: Any) -> list[dict[str, str]] | None:
     if raw is None:
         return None
@@ -195,6 +188,67 @@ def _lookup(config: Dict[str, Any] | None, *keys: str) -> Any:
             return None
         current = current[key]
     return current
+
+
+def _base_cli_command(args: argparse.Namespace) -> list[str]:
+    command = ["python", "-m", "privacy_pipeline.cli"]
+    if args.config:
+        command.extend(["--config", str(args.config)])
+    if args.verbose:
+        command.append("--verbose")
+    return command
+
+
+def _attribute_filter_args(filters: Optional[Dict[str, str]]) -> list[str]:
+    if not filters:
+        return []
+    parts = [f"{key}={value}" for key, value in sorted(filters.items())]
+    return ["--attribute-filter", *parts]
+
+
+def _format_shell_command(parts: list[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def _print_merge_hint(args: argparse.Namespace, command: str, filters: Optional[Dict[str, str]]) -> None:
+    stage_name = FILTER_STAGE_NAMES.get(command)
+    if not stage_name or not filters:
+        return
+    merge_cmd = _base_cli_command(args) + ["json-utils", "merge-filtered", stage_name]
+    print(f"Merge filtered {stage_name} outputs:\n  {_format_shell_command(merge_cmd)}")
+
+
+FILTER_COMPATIBLE_STAGES = {"yoloe", "prepare-gemini", "parse-gemini"}
+
+
+def _print_next_stage_hint(
+    args: argparse.Namespace, command: str, next_stage_filters: Optional[Dict[str, str]]
+) -> None:
+    next_stage = PIPELINE_SUCCESSORS.get(command)
+    if not next_stage:
+        return
+    filters = next_stage_filters if next_stage in FILTER_COMPATIBLE_STAGES else None
+    next_cmd = _base_cli_command(args) + [next_stage] + _attribute_filter_args(filters)
+    print(f"Next pipeline stage:\n  {_format_shell_command(next_cmd)}")
+
+
+def _serialize_config_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value):
+        return {field.name: _serialize_config_value(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, dict):
+        return {str(k): _serialize_config_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_config_value(v) for v in value]
+    return value
+
+
+def _log_stage_config(stage: str, config: Any) -> None:
+    serialized = _serialize_config_value(config)
+    logging.getLogger(__name__).info("%s configuration: %s", stage, json.dumps(serialized, indent=2))
 
 
 def _load_config(config_path: Optional[Path], default_path: Path) -> Dict[str, Any]:
@@ -251,15 +305,38 @@ def _arg_value(args: argparse.Namespace, name: str) -> Any:
     return getattr(args, name, None)
 
 
-def _load_job_names(job_names: list[str], jobs_file: Path) -> list[str]:
-    if job_names:
-        return job_names
-    if not jobs_file.exists():
-        raise ValueError("Job names must be provided via CLI or config file")
-    loaded_jobs = json.loads(jobs_file.read_text() or "[]")
-    if not isinstance(loaded_jobs, list):
-        raise ValueError("Jobs file must contain a JSON array of job names")
-    return [str(job) for job in loaded_jobs if job]
+def _load_job_records(selected_names: list[str], jobs_file: Path) -> List[GeminiJobRecord]:
+    if jobs_file.exists():
+        loaded_jobs = json.loads(jobs_file.read_text() or "[]")
+        if not isinstance(loaded_jobs, list):
+            raise ValueError("Jobs file must contain a JSON array")
+
+        normalized: List[GeminiJobRecord] = []
+        for item in loaded_jobs:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if not name:
+                    continue
+                output_uri = item.get("output_uri")
+            else:
+                name = item
+                output_uri = None
+            normalized.append({"name": str(name), "output_uri": str(output_uri) if output_uri else None})
+
+        if selected_names:
+            wanted = {str(name) for name in selected_names}
+            filtered = [job for job in normalized if job["name"] in wanted]
+            missing = wanted - {job["name"] for job in filtered}
+            if missing:
+                raise ValueError(f"Jobs {sorted(missing)} not found in {jobs_file}")
+            return filtered
+
+        return normalized
+
+    if selected_names:
+        return [{"name": str(name), "output_uri": None} for name in selected_names if name]
+
+    raise ValueError("Job names must be provided via CLI or config file")
 
 
 def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> DatasetConfig:
@@ -278,7 +355,7 @@ def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> D
     user_jsonl = _resolve_path(args.user_jsonl, dataset_cfg.get("user_jsonl"), None)
     output_jsonl = _resolve_path(args.output, dataset_cfg.get("output_jsonl"), Path("image_index.jsonl"))
 
-    return DatasetConfig(
+    dataset_config = DatasetConfig(
         image_root=image_root,
         recursive=recursive,
         path_attributes=path_attributes,
@@ -286,6 +363,8 @@ def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> D
         user_jsonl=user_jsonl,
         output_jsonl=output_jsonl,
     )
+    _log_stage_config("Dataset", dataset_config)
+    return dataset_config
 
 
 def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> YoloEConfig:
@@ -302,7 +381,7 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
     default_visualizations = Path("yoloe_visualizations")
     if attribute_filters:
         stage_dir = filtered_stage_dir("yoloe", attribute_filters)
-        default_output = stage_dir.with_suffix(".jsonl")
+        default_output = stage_dir / default_output.name
         default_visualizations = stage_dir / default_visualizations
 
     visualization_dir = _resolve_path(
@@ -311,12 +390,15 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
         default_visualizations,
     )
 
-    output_jsonl = _resolve_path(args.output, yolo_cfg.get("output_jsonl"), default_output)
+    if attribute_filters and args.output is None:
+        output_jsonl = default_output
+    else:
+        output_jsonl = _resolve_path(args.output, yolo_cfg.get("output_jsonl"), default_output)
     dataset_image_root = _resolve_path(
         None, _lookup(config, "dataset", "image_root"), None
     )
 
-    return YoloEConfig(
+    yoloe_config = YoloEConfig(
         model_path=model_path,
         threshold=threshold,
         visualize=visualize,
@@ -325,6 +407,8 @@ def _build_yoloe_config(args: argparse.Namespace, config: Dict[str, Any]) -> Yol
         attribute_filters=attribute_filters,
         dataset_image_root=dataset_image_root,
     )
+    _log_stage_config("YOLOE", yoloe_config)
+    return yoloe_config
 
 
 def _build_gemini_config(
@@ -367,6 +451,14 @@ def _build_gemini_config(
     )
     gcs_arg = _arg_value(args, "gcs_bucket")
     gcs_bucket = gcs_arg if gcs_arg is not None else gemini_cfg.get("gcs_bucket")
+    gcs_output_arg = _arg_value(args, "gcs_output_bucket")
+    gcs_output_bucket = gcs_output_arg if gcs_output_arg is not None else gemini_cfg.get("gcs_output_bucket")
+    output_prefix_arg = _arg_value(args, "gcs_output_prefix")
+    gcs_output_prefix = (
+        output_prefix_arg
+        if output_prefix_arg is not None
+        else gemini_cfg.get("gcs_output_prefix", "gemini_outputs")
+    )
     submitted_jobs_file = _resolve_path(
         _arg_value(args, "jobs_file"),
         gemini_cfg.get("submitted_jobs_file"),
@@ -384,19 +476,13 @@ def _build_gemini_config(
         if flag_categories_arg is not None
         else _normalize_str_list(gemini_cfg.get("flag_categories"))
     )
-    flag_category_descriptions_arg = _arg_value(args, "flag_category_descriptions")
-    flag_category_descriptions = (
-        _parse_category_descriptions(flag_category_descriptions_arg)
-        if flag_category_descriptions_arg is not None
-        else _parse_category_descriptions(gemini_cfg.get("flag_category_descriptions"))
-    )
     final_output = _resolve_path(
         _arg_value(args, "final_output"),
         gemini_cfg.get("final_output_jsonl"),
         base_final_output,
     )
 
-    return GeminiConfig(
+    gemini_config = GeminiConfig(
         prompt=prompt or "",
         classes_to_forward=classes_to_forward,
         min_confidence=min_confidence,
@@ -404,6 +490,8 @@ def _build_gemini_config(
         max_batch_size_bytes=max_batch_size,
         output_batch_dir=output_batch_dir,
         gcs_bucket=gcs_bucket,
+        gcs_output_bucket=gcs_output_bucket,
+        gcs_output_prefix=gcs_output_prefix,
         submitted_jobs_file=submitted_jobs_file,
         project=project,
         location=location,
@@ -411,8 +499,9 @@ def _build_gemini_config(
         final_output_jsonl=final_output,
         attribute_filters=attribute_filters,
         flag_categories=flag_categories,
-        flag_category_descriptions=flag_category_descriptions,
     )
+    _log_stage_config("Gemini", gemini_config)
+    return gemini_config
 
 
 def _add_common_yolo_args(parser: argparse.ArgumentParser) -> None:
@@ -450,6 +539,8 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-dir", type=Path)
     parser.add_argument("--max-bytes", type=float)
     parser.add_argument("--gcs-bucket", type=str)
+    parser.add_argument("--gcs-output-bucket", type=str, help="Bucket for Gemini batch outputs")
+    parser.add_argument("--gcs-output-prefix", type=str, help="Prefix within the output bucket for Gemini results")
     parser.add_argument("--project", type=str)
     parser.add_argument("--location", type=str)
     parser.add_argument("--model", type=str)
@@ -459,12 +550,6 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
         "--flag-categories",
         nargs="*",
         help="Optional list of allowed #FLAG categories (defaults to built-in set)",
-    )
-    parser.add_argument(
-        "--flag-category-descriptions",
-        action="append",
-        metavar="NAME:DESCRIPTION",
-        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
     )
     parser.add_argument(
         "--attribute-filter",
@@ -555,12 +640,6 @@ def main():
         nargs="*",
         help="Optional list of allowed #FLAG categories (defaults to built-in set)",
     )
-    download_parser.add_argument(
-        "--flag-category-descriptions",
-        action="append",
-        metavar="NAME:DESCRIPTION",
-        help="Optional descriptions for #FLAG categories (can be provided multiple times)",
-    )
 
     parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
     parse_parser.add_argument("outputs", nargs="+", type=Path)
@@ -614,6 +693,7 @@ def main():
         config = _build_dataset_config(args, config_data)
         output = build_image_index(config)
         print(f"Wrote image index to {output}")
+        _print_next_stage_hint(args, args.command, getattr(config, "attribute_filters", None))
 
     elif args.command == "yoloe":
         dataset_cfg = config_data.get("dataset", {}) if isinstance(config_data, dict) else {}
@@ -623,6 +703,8 @@ def main():
         config = _build_yoloe_config(args, config_data)
         output = run_yoloe(Path(index_path), config)
         print(f"Wrote YOLOE output to {output}")
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "prepare-gemini":
         config = _build_gemini_config(args, config_data)
@@ -634,6 +716,8 @@ def main():
         flagged = collect_flagged_scenes(yolo_output, config)
         batch_files = create_gemini_batches(flagged, config)
         print(json.dumps({"flagged_scenes": len(flagged), "batch_files": [str(p) for p in batch_files]}, indent=2))
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "submit-gemini":
         output_batch_dir = _resolve_path(
@@ -643,18 +727,22 @@ def main():
         )
         batch_files = sorted(output_batch_dir.glob("*.jsonl"))
         config = _build_gemini_config(args, config_data, require_prompt=False)
-        job_names = submit_gemini_batches(batch_files, config)
-        print(json.dumps({"submitted_jobs": job_names}, indent=2))
+        job_records = submit_gemini_batches(batch_files, config)
+        print(json.dumps({"submitted_jobs": job_records}, indent=2))
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "check-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)
-        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
-        statuses = get_gemini_job_status(job_names, config)
+        job_records = _load_job_records(args.job_names or [], config.submitted_jobs_file)
+        statuses = get_gemini_job_status(job_records, config)
         print(json.dumps({"jobs": statuses}, indent=2))
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "download-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)
-        job_names = _load_job_names(args.job_names or [], config.submitted_jobs_file)
+        job_records = _load_job_records(args.job_names or [], config.submitted_jobs_file)
         stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
         output_dir = _resolve_path(args.output_dir, None, stage_root / "gemini_outputs")
         cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root)
@@ -665,7 +753,7 @@ def main():
             default=None,
         )
 
-        downloaded = download_completed_jobs(job_names, output_dir, config)
+        downloaded = download_completed_jobs(job_records, output_dir, config)
         cleaned = (
             clean_and_merge_gemini_logs(
                 downloaded,
@@ -673,7 +761,6 @@ def main():
                 config,
                 original_index=original_index,
                 allowed_categories=config.flag_categories,
-                category_descriptions=config.flag_category_descriptions,
             )
             if downloaded
             else None
@@ -687,6 +774,8 @@ def main():
                 indent=2,
             )
         )
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "parse-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)
@@ -699,6 +788,8 @@ def main():
             raise ValueError("--original-index must be provided via CLI or config file")
         output = parse_gemini_output(args.outputs, original_index, config)
         print(f"Wrote parsed Gemini output to {output}")
+        _print_merge_hint(args, args.command, config.attribute_filters)
+        _print_next_stage_hint(args, args.command, config.attribute_filters)
 
     elif args.command == "json-utils":
         json_cfg = config_data.get("json_utils", {}) if isinstance(config_data, dict) else {}

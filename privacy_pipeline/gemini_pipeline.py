@@ -3,11 +3,14 @@ import importlib.util
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Optional, TypedDict
 
 from google import genai
+from google.genai import types
+from google.genai.types import CreateBatchJobConfig
 from google.cloud import storage
 
 from privacy_pipeline.config import GeminiConfig
@@ -21,14 +24,19 @@ logger = logging.getLogger(__name__)
 
 
 FLAG_PATTERN = re.compile(r"#FLAG\s*\[?([^\]\n]+)\]?")
-DEFAULT_FLAG_CATEGORY_DESCRIPTIONS: Dict[str, str] = {
-    "PII": "Personally identifiable information",
-    "CONFIDENTIAL_INFO": "Sensitive or confidential content",
-    "SECURITY_INFO": "Security-related details (passwords, keys, etc.)",
-    "MACHINE_READABLE_CODE": "Barcodes, QR codes, or other machine-readable markings",
-    "BRANDING_LOGOS": "Logos or branded imagery",
-    "OTHER": "Other content requiring review",
+DEFAULT_FLAG_CATEGORIES = {
+    "PII",
+    "CONFIDENTIAL_INFO",
+    "SECURITY_INFO",
+    "MACHINE_READABLE_CODE",
+    "BRANDING_LOGOS",
+    "OTHER",
 }
+
+
+class GeminiJobRecord(TypedDict):
+    name: str
+    output_uri: Optional[str]
 
 
 def _load_yolo_output(path: Path) -> Iterable[Dict]:
@@ -94,45 +102,6 @@ def _strip_inline_images(request: Dict | None) -> Dict | None:
     return cleaned
 
 
-def _extract_output_uri(job: object) -> Optional[str]:
-    """Extract an output URI from a job object with multiple possible shapes."""
-
-    def _get_attr(obj: object, name: str) -> Optional[str]:
-        value = getattr(obj, name, None)
-        return str(value) if value else None
-
-    for attr in ("output_gcs_uri", "output_output_gcs_uri", "output_dir", "output_uri"):
-        uri = _get_attr(job, attr)
-        if uri:
-            return uri
-
-    output_info = getattr(job, "output_info", None) or getattr(job, "output", None)
-    if output_info:
-        for attr in (
-            "gcs_output_directory",
-            "gcs_output_dir",
-            "gcs_output_uri",
-            "output_uri",
-        ):
-            uri = _get_attr(output_info, attr)
-            if uri:
-                return uri
-        if isinstance(output_info, dict):
-            for key in (
-                "gcs_output_directory",
-                "gcsOutputDirectory",
-                "gcs_output_uri",
-                "gcsOutputUri",
-                "output_uri",
-                "outputUri",
-            ):
-                uri = output_info.get(key)
-                if uri:
-                    return str(uri)
-
-    return None
-
-
 def _extract_response_text(response: Dict | None) -> str | None:
     if not isinstance(response, dict):
         return None
@@ -165,17 +134,6 @@ def _normalize_flag_categories(categories: Iterable[str] | None) -> set[str]:
     return normalized
 
 
-def _normalize_category_descriptions(raw: Mapping[str, str] | None) -> Dict[str, str]:
-    if not raw:
-        return {}
-    normalized: Dict[str, str] = {}
-    for key, value in raw.items():
-        normalized_key = str(key).strip().upper().replace(" ", "_")
-        if normalized_key:
-            normalized[normalized_key] = str(value)
-    return normalized
-
-
 def _extract_flag_categories(text: str | None, allowed_categories: Optional[set[str]] = None) -> list[str]:
     if not text:
         return []
@@ -184,7 +142,7 @@ def _extract_flag_categories(text: str | None, allowed_categories: Optional[set[
         return []
     raw_categories = re.split(r"[\s,]+", match.group(1))
     categories: list[str] = []
-    normalized_allowed = allowed_categories or _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
+    normalized_allowed = allowed_categories or _normalize_flag_categories(DEFAULT_FLAG_CATEGORIES)
     for category in raw_categories:
         normalized = category.strip().upper().replace(" ", "_")
         if not normalized:
@@ -243,6 +201,35 @@ def _encode_image(image_path: Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+def _ensure_bucket(storage_client: storage.Client, bucket_name: str, location: str) -> storage.Bucket:
+    bucket = storage_client.bucket(bucket_name)
+    if not bucket.exists():
+        bucket = storage_client.create_bucket(bucket, location=location)
+        logger.info("Created GCS bucket %s in %s", bucket.name, location)
+    return bucket
+
+
+def _build_output_uri(config: GeminiConfig, batch_file: Path) -> str:
+    prefix = (config.gcs_output_prefix or "").strip("/")
+    unique_suffix = uuid.uuid4().hex
+    relative_path = f"{batch_file.stem}-{unique_suffix}"
+    if prefix:
+        relative_path = f"{prefix}/{relative_path}"
+    if not config.gcs_output_bucket:
+        raise ValueError("gcs_output_bucket must be set on GeminiConfig to submit jobs")
+    return f"gs://{config.gcs_output_bucket}/{relative_path}"
+
+
+def _split_gcs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"Invalid GCS URI: {uri}")
+    bucket_and_path = uri[len("gs://") :]
+    parts = bucket_and_path.split("/", 1)
+    bucket_name = parts[0]
+    path = parts[1] if len(parts) > 1 else ""
+    return bucket_name, path
+
+
 def _build_record(scene: Path, images: List[str], prompt: str) -> str:
     parts = [{"text": prompt}]
     for image in images:
@@ -293,52 +280,57 @@ def create_gemini_batches(flagged_scenes: Dict[Path, List[str]], config: GeminiC
     return batch_files
 
 
-def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List[str]:
+def submit_gemini_batches(batch_files: List[Path], config: GeminiConfig) -> List[GeminiJobRecord]:
     if not config.gcs_bucket:
         raise ValueError("gcs_bucket must be set on GeminiConfig to submit jobs")
+    if not config.gcs_output_bucket:
+        raise ValueError("gcs_output_bucket must be set on GeminiConfig to submit jobs")
 
     storage_client = storage.Client()
-    bucket = storage_client.bucket(config.gcs_bucket)
-    if not bucket.exists():
-        bucket = storage_client.create_bucket(bucket, location=config.location)
-        logger.info("Created GCS bucket %s in %s", bucket.name, config.location)
+    input_bucket = _ensure_bucket(storage_client, config.gcs_bucket, config.location)
+    _ensure_bucket(storage_client, config.gcs_output_bucket, config.location)
 
     client = genai.Client(vertexai=True, project=config.project, location=config.location)
 
-    job_names: List[str] = []
+    job_records: List[GeminiJobRecord] = []
     for batch_file in batch_files:
-        blob = bucket.blob(batch_file.name)
+        blob = input_bucket.blob(batch_file.name)
         blob.upload_from_filename(str(batch_file))
-        blob_uri = f"gs://{bucket.name}/{blob.name}"
+        blob_uri = f"gs://{input_bucket.name}/{blob.name}"
+        output_uri = _build_output_uri(config, batch_file)
 
         job = client.batches.create(
             model=config.model,
             src=blob_uri,
-            config={"display_name": batch_file.stem},
+            config=CreateBatchJobConfig(display_name=batch_file.stem, dest=output_uri),
         )
-        job_names.append(job.name)
-        logger.info("Submitted Gemini batch %s as job %s", batch_file.name, job.name)
+        job_records.append({"name": job.name, "output_uri": output_uri})
+        logger.info(
+            "Submitted Gemini batch %s as job %s (output -> %s)",
+            batch_file.name,
+            job.name,
+            output_uri,
+        )
 
-    config.submitted_jobs_file.write_text(json.dumps(job_names, indent=2))
-    logger.info("Recorded %d submitted jobs to %s", len(job_names), config.submitted_jobs_file)
-    return job_names
+    config.submitted_jobs_file.write_text(json.dumps(job_records, indent=2))
+    logger.info("Recorded %d submitted jobs to %s", len(job_records), config.submitted_jobs_file)
+    return job_records
 
 
-def get_gemini_job_status(job_names: List[str], config: GeminiConfig) -> List[Dict]:
-    if not job_names:
+def get_gemini_job_status(job_records: List[GeminiJobRecord], config: GeminiConfig) -> List[Dict]:
+    if not job_records:
         return []
 
     client = genai.Client(vertexai=True, project=config.project, location=config.location)
     statuses: List[Dict] = []
-    for job_name in job_names:
-        job = client.batches.get(name=job_name)
-        output_uri = _extract_output_uri(job)
+    for job_record in job_records:
+        job = client.batches.get(name=job_record["name"])
         statuses.append(
             {
                 "name": job.name,
                 "state": getattr(job, "state", None),
                 "display_name": getattr(job, "display_name", None),
-                "output_uri": output_uri,
+                "output_uri": job_record.get("output_uri"),
                 "error": getattr(job, "error", None),
             }
         )
@@ -346,18 +338,19 @@ def get_gemini_job_status(job_names: List[str], config: GeminiConfig) -> List[Di
     return statuses
 
 
-def download_completed_jobs(job_names: List[str], destination_dir: Path, config: GeminiConfig) -> List[Path]:
+def download_completed_jobs(job_records: List[GeminiJobRecord], destination_dir: Path, config: GeminiConfig) -> List[Path]:
     destination_dir.mkdir(parents=True, exist_ok=True)
-    client = genai.Client(vertexai=True, project=config.project, location=config.location)
 
     downloaded: List[Path] = []
-    for job_name in job_names:
-        job = client.batches.get(name=job_name)
-        output_uri = _extract_output_uri(job)
+    if not job_records:
+        return downloaded
+
+    storage_client = storage.Client()
+    for job_record in job_records:
+        output_uri = job_record.get("output_uri")
         if not output_uri:
-            continue
-        storage_client = storage.Client()
-        bucket_name, path = output_uri.replace("gs://", "").split("/", 1)
+            raise ValueError(f"No output_uri recorded for job {job_record['name']}")
+        bucket_name, path = _split_gcs_uri(output_uri)
         bucket = storage_client.bucket(bucket_name)
         for blob in bucket.list_blobs(prefix=path):
             local_path = destination_dir / Path(blob.name).name
@@ -368,79 +361,18 @@ def download_completed_jobs(job_names: List[str], destination_dir: Path, config:
     return downloaded
 
 
-def clean_gemini_logs(
-    batch_outputs: List[Path],
-    cleaned_dir: Path,
-    allowed_categories: Optional[Iterable[str]] = None,
-    category_descriptions: Optional[Mapping[str, str]] = None,
-) -> List[Path]:
-    cleaned_dir.mkdir(parents=True, exist_ok=True)
-
-    normalized_allowed = _normalize_flag_categories(allowed_categories)
-    if not normalized_allowed and category_descriptions:
-        normalized_allowed = _normalize_flag_categories(category_descriptions.keys())
-    if not normalized_allowed:
-        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
-    normalized_descriptions = dict(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
-    normalized_descriptions.update(_normalize_category_descriptions(category_descriptions))
-
-    def _clean_record(record: Dict | None) -> Dict:
-        request = record.get("request") if isinstance(record, dict) else None
-        response = record.get("response") if isinstance(record, dict) else None
-
-        cleaned_record = dict(record) if isinstance(record, dict) else {"raw": record}
-        cleaned_record["request"] = _strip_inline_images(request)
-
-        response_text = _extract_response_text(response)
-        cleaned_record["response_text"] = response_text
-        categories = _extract_flag_categories(response_text, normalized_allowed)
-        cleaned_record["flag_categories"] = categories
-        category_details = {
-            category: normalized_descriptions.get(category)
-            for category in categories
-            if category in normalized_descriptions
-        }
-        if category_details:
-            cleaned_record["flag_category_descriptions"] = category_details
-        cleaned_record["is_flagged"] = bool(FLAG_PATTERN.search(response_text or ""))
-        return cleaned_record
-
-    cleaned_files: List[Path] = []
-    for batch_output in batch_outputs:
-        cleaned_path = cleaned_dir / batch_output.name
-        with batch_output.open() as infile, cleaned_path.open("wb") as outfile:
-            for line in infile:
-                if not line.strip():
-                    continue
-
-                record = _load_json_line(line)
-                cleaned_record = _clean_record(record)
-                outfile.write(_dump_json_line(cleaned_record) + b"\n")
-
-        cleaned_files.append(cleaned_path)
-        logger.debug("Cleaned Gemini output %s -> %s", batch_output, cleaned_path)
-
-    logger.info("Wrote %d cleaned Gemini output files to %s", len(cleaned_files), cleaned_dir)
-    return cleaned_files
-
-
 def clean_and_merge_gemini_logs(
     batch_outputs: List[Path],
     merged_output: Path,
     config: GeminiConfig,
     original_index: Optional[Path] = None,
     allowed_categories: Optional[Iterable[str]] = None,
-    category_descriptions: Optional[Mapping[str, str]] = None,
 ) -> Path:
     merged_output.parent.mkdir(parents=True, exist_ok=True)
 
     normalized_allowed = _normalize_flag_categories(allowed_categories)
-    if not normalized_allowed and category_descriptions:
-        normalized_allowed = _normalize_flag_categories(category_descriptions.keys())
     if not normalized_allowed:
-        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
-    normalized_descriptions = dict(DEFAULT_FLAG_CATEGORY_DESCRIPTIONS)
-    normalized_descriptions.update(_normalize_category_descriptions(category_descriptions))
+        normalized_allowed = _normalize_flag_categories(DEFAULT_FLAG_CATEGORIES)
 
     scene_attributes = _load_scene_attributes(original_index, config)
 
@@ -455,12 +387,6 @@ def clean_and_merge_gemini_logs(
             "response_text": response_text,
             "flag_categories": categories,
             "is_flagged": bool(FLAG_PATTERN.search(response_text or "")),
-            "flag_category_descriptions": {
-                category: normalized_descriptions.get(category)
-                for category in categories
-                if category in normalized_descriptions
-            }
-            or None,
             "request": _strip_inline_images(request),
         }
 
@@ -487,10 +413,6 @@ def clean_and_merge_gemini_logs(
                         "flag_categories": cleaned_record.get("flag_categories", []),
                         "is_flagged": cleaned_record.get("is_flagged", False),
                     }
-
-                    flag_descriptions = cleaned_record.get("flag_category_descriptions")
-                    if flag_descriptions:
-                        merged_record["flag_category_descriptions"] = flag_descriptions
 
                     request = cleaned_record.get("request")
                     if request:

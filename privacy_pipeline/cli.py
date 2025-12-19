@@ -20,7 +20,6 @@ from privacy_pipeline.gemini_pipeline import (
     create_gemini_batches,
     download_completed_jobs,
     get_gemini_job_status,
-    parse_gemini_output,
     submit_gemini_batches,
 )
 
@@ -34,7 +33,7 @@ PIPELINE_SUCCESSORS: dict[str, str] = {
     "prepare-gemini": "submit-gemini",
     "submit-gemini": "check-gemini",
     "check-gemini": "download-gemini",
-    "download-gemini": "parse-gemini",
+    "download-gemini": "clean-gemini",
 }
 
 FILTER_STAGE_NAMES: dict[str, str] = {
@@ -43,7 +42,7 @@ FILTER_STAGE_NAMES: dict[str, str] = {
     "submit-gemini": "gemini",
     "check-gemini": "gemini",
     "download-gemini": "gemini",
-    "parse-gemini": "gemini",
+    "clean-gemini": "gemini",
 }
 
 
@@ -170,7 +169,7 @@ def _determine_filter_slug(args: argparse.Namespace, config: Dict[str, Any]) -> 
             if args.attribute_filter is not None
             else _lookup(config, "yoloe", "attribute_filters")
         )
-    elif args.command in {"prepare-gemini", "submit-gemini", "check-gemini", "download-gemini", "parse-gemini"}:
+    elif args.command in {"prepare-gemini", "submit-gemini", "check-gemini", "download-gemini", "clean-gemini"}:
         raw_filters = _arg_value(args, "attribute_filter")
         filters = (
             _parse_attribute_filters(raw_filters)
@@ -218,7 +217,7 @@ def _print_merge_hint(args: argparse.Namespace, command: str, filters: Optional[
     print(f"Merge filtered {stage_name} outputs:\n  {_format_shell_command(merge_cmd)}")
 
 
-FILTER_COMPATIBLE_STAGES = {"yoloe", "prepare-gemini", "parse-gemini"}
+FILTER_COMPATIBLE_STAGES = {"yoloe", "prepare-gemini", "clean-gemini"}
 
 
 def _print_next_stage_hint(
@@ -625,33 +624,32 @@ def main():
     check_parser.add_argument("--project")
     check_parser.add_argument("--location")
 
-    download_parser = subparsers.add_parser(
-        "download-gemini", help="Download completed Gemini batch outputs and clean logs"
-    )
+    download_parser = subparsers.add_parser("download-gemini", help="Download completed Gemini batch outputs")
     download_parser.add_argument("job_names", nargs="*", help="Optional Gemini batch job names")
     download_parser.add_argument("--jobs-file", type=Path, help="JSON file containing submitted job names")
     download_parser.add_argument("--output-dir", type=Path, help="Directory to store downloaded outputs")
-    download_parser.add_argument("--cleaned-dir", type=Path, help="Directory to store cleaned logs")
-    download_parser.add_argument("--original-index", type=Path, help="Image index JSONL for attaching attributes")
     download_parser.add_argument("--project")
     download_parser.add_argument("--location")
-    download_parser.add_argument(
+
+    clean_parser = subparsers.add_parser("clean-gemini", help="Clean and merge downloaded Gemini outputs")
+    clean_parser.add_argument("outputs", nargs="*", type=Path, help="Downloaded Gemini output JSONL files")
+    clean_parser.add_argument("--outputs-dir", type=Path, help="Directory containing downloaded Gemini outputs")
+    clean_parser.add_argument("--output", type=Path, help="Destination cleaned JSONL path")
+    clean_parser.add_argument("--original-index", type=Path, help="Image index JSONL for attaching attributes")
+    clean_parser.add_argument(
         "--flag-categories",
         nargs="*",
         help="Optional list of allowed #FLAG categories (defaults to built-in set)",
     )
-
-    parse_parser = subparsers.add_parser("parse-gemini", help="Parse Gemini batch outputs into JSONL")
-    parse_parser.add_argument("outputs", nargs="+", type=Path)
-    parse_parser.add_argument("--original-index", type=Path)
-    parse_parser.add_argument("--scene-level", type=int)
-    parse_parser.add_argument("--final-output", type=Path)
-    parse_parser.add_argument(
+    clean_parser.add_argument(
         "--attribute-filter",
         nargs="*",
         metavar="NAME=VALUE",
         help="Only include Gemini outputs whose attributes match all provided filters",
     )
+    clean_parser.add_argument("--project")
+    clean_parser.add_argument("--location")
+
 
     json_parser = subparsers.add_parser("json-utils", help="Inspect and merge pipeline JSONL files")
     json_subparsers = json_parser.add_subparsers(dest="json_command", required=True)
@@ -745,31 +743,12 @@ def main():
         job_records = _load_job_records(args.job_names or [], config.submitted_jobs_file)
         stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
         output_dir = _resolve_path(args.output_dir, None, stage_root / "gemini_outputs")
-        cleaned_dir = _resolve_path(args.cleaned_dir, None, stage_root)
-        merged_clean_output = cleaned_dir / "gemini_output_cleaned.jsonl"
-        original_index = _resolve_path(
-            args.original_index,
-            _lookup(config_data, "dataset", "output_jsonl"),
-            default=None,
-        )
 
         downloaded = download_completed_jobs(job_records, output_dir, config)
-        cleaned = (
-            clean_and_merge_gemini_logs(
-                downloaded,
-                merged_clean_output,
-                config,
-                original_index=original_index,
-                allowed_categories=config.flag_categories,
-            )
-            if downloaded
-            else None
-        )
         print(
             json.dumps(
                 {
                     "downloaded": [str(p) for p in downloaded],
-                    "cleaned": [str(cleaned)] if cleaned else [],
                 },
                 indent=2,
             )
@@ -777,17 +756,39 @@ def main():
         _print_merge_hint(args, args.command, config.attribute_filters)
         _print_next_stage_hint(args, args.command, config.attribute_filters)
 
-    elif args.command == "parse-gemini":
+    elif args.command == "clean-gemini":
         config = _build_gemini_config(args, config_data, require_prompt=False)
+        stage_root = filtered_stage_dir("gemini", config.attribute_filters) if config.attribute_filters else Path(".")
+        outputs_dir = _resolve_path(args.outputs_dir, None, stage_root / "gemini_outputs")
+        batch_outputs: List[Path] = list(args.outputs) if args.outputs else []
+        if not batch_outputs and outputs_dir:
+            batch_outputs = sorted(outputs_dir.glob("*.jsonl"))
+        if not batch_outputs:
+            raise ValueError("No Gemini batch outputs provided; pass file paths or specify --outputs-dir")
+        merged_clean_output = _resolve_path(args.output, None, stage_root / "gemini_output_cleaned.jsonl")
+        if merged_clean_output is None:
+            raise ValueError("Unable to determine destination for cleaned Gemini output")
         original_index = _resolve_path(
             args.original_index,
             _lookup(config_data, "dataset", "output_jsonl"),
             default=None,
         )
-        if original_index is None:
-            raise ValueError("--original-index must be provided via CLI or config file")
-        output = parse_gemini_output(args.outputs, original_index, config)
-        print(f"Wrote parsed Gemini output to {output}")
+        cleaned = clean_and_merge_gemini_logs(
+            batch_outputs,
+            merged_clean_output,
+            config,
+            original_index=original_index,
+            allowed_categories=config.flag_categories,
+        )
+        print(
+            json.dumps(
+                {
+                    "inputs": [str(p) for p in batch_outputs],
+                    "cleaned": str(cleaned),
+                },
+                indent=2,
+            )
+        )
         _print_merge_hint(args, args.command, config.attribute_filters)
         _print_next_stage_hint(args, args.command, config.attribute_filters)
 

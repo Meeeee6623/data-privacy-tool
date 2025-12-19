@@ -61,14 +61,16 @@ python -m privacy_pipeline.cli status-gemini jobname-123 another-job
 # The jobs file stores objects of the form {"name": "...", "output_uri": "gs://..."}
 # so downloads can use the recorded destinations directly.
 
-# 5) Parse Gemini outputs
-python -m privacy_pipeline.cli parse-gemini /path/to/output/*.jsonl \
-  --original-index image_index.jsonl --scene-level 2 \
-  --final-output gemini_output.jsonl
-
-# 6) Download and clean Gemini logs once jobs finish
+# 5) Download Gemini outputs once jobs finish
 python -m privacy_pipeline.cli download-gemini --jobs-file gemini_jobs.json \
-  --output-dir gemini_logs --flag-categories PII CONFIDENTIAL_INFO
+  --output-dir gemini_outputs
+
+# 6) Clean and merge Gemini logs
+python -m privacy_pipeline.cli clean-gemini \
+  --outputs-dir gemini_outputs \
+  --original-index image_index.jsonl \
+  --output gemini_output_cleaned.jsonl \
+  --flag-categories PII CONFIDENTIAL_INFO
 
 # Inspect or merge JSONL files
 python -m privacy_pipeline.cli json-utils list-values image_index.jsonl --attributes lab building

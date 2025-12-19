@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TypedDict
 
 from google import genai
-from google.genai import types
 from google.genai.types import CreateBatchJobConfig
 from google.cloud import storage
 
@@ -65,41 +64,6 @@ def _matches_filters(attributes: Dict, filters: Dict[str, str] | None) -> bool:
         return True
     return all(attributes.get(key) == value for key, value in filters.items())
 
-
-def _strip_inline_images(request: Dict | None) -> Dict | None:
-    if not isinstance(request, dict):
-        return request
-
-    cleaned = dict(request)
-    cleaned_contents = []
-    for content in request.get("contents", []):
-        if not isinstance(content, dict):
-            cleaned_contents.append(content)
-            continue
-
-        cleaned_parts = []
-        for part in content.get("parts", []):
-            if not isinstance(part, dict):
-                cleaned_parts.append(part)
-                continue
-
-            if "inlineData" in part and isinstance(part["inlineData"], dict):
-                inline_data = dict(part["inlineData"])
-                inline_data.pop("data", None)
-                cleaned_part = dict(part)
-                cleaned_part["inlineData"] = inline_data
-                cleaned_parts.append(cleaned_part)
-            else:
-                cleaned_parts.append(part)
-
-        cleaned_content = dict(content)
-        if cleaned_parts:
-            cleaned_content["parts"] = cleaned_parts
-        cleaned_contents.append(cleaned_content)
-
-    if cleaned_contents:
-        cleaned["contents"] = cleaned_contents
-    return cleaned
 
 
 def _extract_response_text(response: Dict | None) -> str | None:
@@ -353,7 +317,14 @@ def download_completed_jobs(job_records: List[GeminiJobRecord], destination_dir:
         bucket_name, path = _split_gcs_uri(output_uri)
         bucket = storage_client.bucket(bucket_name)
         for blob in bucket.list_blobs(prefix=path):
-            local_path = destination_dir / Path(blob.name).name
+            blob_path = Path(blob.name)
+            filename = blob_path.name
+            parent_name = blob_path.parent.name
+            if parent_name:
+                suffixes = "".join(Path(filename).suffixes)
+                base_name = filename[: -len(suffixes)] if suffixes else filename
+                filename = f"{base_name}_{parent_name}{suffixes}"
+            local_path = destination_dir / filename
             blob.download_to_filename(local_path)
             downloaded.append(local_path)
             logger.debug("Downloaded output blob %s to %s", blob.name, local_path)
@@ -377,7 +348,6 @@ def clean_and_merge_gemini_logs(
     scene_attributes = _load_scene_attributes(original_index, config)
 
     def _clean_record(record: Dict | None) -> Dict:
-        request = record.get("request") if isinstance(record, dict) else None
         response = record.get("response") if isinstance(record, dict) else None
 
         response_text = _extract_response_text(response)
@@ -387,7 +357,6 @@ def clean_and_merge_gemini_logs(
             "response_text": response_text,
             "flag_categories": categories,
             "is_flagged": bool(FLAG_PATTERN.search(response_text or "")),
-            "request": _strip_inline_images(request),
         }
 
     with merged_output.open("wb") as outfile:
@@ -414,40 +383,8 @@ def clean_and_merge_gemini_logs(
                         "is_flagged": cleaned_record.get("is_flagged", False),
                     }
 
-                    request = cleaned_record.get("request")
-                    if request:
-                        merged_record["request"] = request
-
                     outfile.write(_dump_json_line(merged_record) + b"\n")
                     cleaned_count += 1
 
     logger.info("Merged and cleaned %d Gemini records into %s", cleaned_count, merged_output)
     return merged_output
-
-
-def parse_gemini_output(batch_outputs: List[Path], original_index: Path, config: GeminiConfig) -> Path:
-    scene_to_attributes = _load_scene_attributes(original_index, config)
-
-    parsed: List[Dict] = []
-    for batch_output in batch_outputs:
-        for record in _load_yolo_output(batch_output):
-            key = record.get("key")
-            result = record.get("result", {})
-            contents = result.get("contents", []) if isinstance(result, dict) else []
-            if key in scene_to_attributes:
-                parsed.append(
-                    {
-                        "scene_path": key,
-                        "attributes": scene_to_attributes.get(key, {}),
-                        "gemini_response": contents,
-                    }
-                )
-
-    logger.info("Parsed %d Gemini batch outputs", len(parsed))
-
-    config.final_output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-    with config.final_output_jsonl.open("w") as f:
-        for record in parsed:
-            f.write(json.dumps(record) + "\n")
-    logger.info("Wrote parsed Gemini output to %s", config.final_output_jsonl)
-    return config.final_output_jsonl

@@ -221,3 +221,4 @@ uv.lock
 config.yaml
 
 data/
+filtered/

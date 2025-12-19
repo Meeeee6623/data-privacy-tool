@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from privacy_pipeline.utils import GEMINI_STAGE_DIR, MODELS_DIR, OUTPUT_ROOT
+from privacy_pipeline.utils import CONFIG_DIR, GEMINI_STAGE_DIR, MODELS_DIR, OUTPUT_ROOT
 
 
 @dataclass
@@ -23,7 +23,7 @@ class YoloEConfig:
     """Configuration for running YOLOE inference."""
 
     model_path: Path = MODELS_DIR / "yoloe-11l-seg.pt"
-    classes_path: Path = Path(__file__).resolve().parent / "yoloe_classes.txt"
+    classes_path: Path = CONFIG_DIR / "yoloe_classes.txt"
     threshold: float = 0.5
     visualize: bool = False
     visualization_dir: Optional[Path] = None

@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 OUTPUT_ROOT = Path("output")
 CONFIG_DIR = Path("config")
+LOGS_DIR = Path("logs")
 VISUALIZATION_ROOT = OUTPUT_ROOT / "visualizations"
 GEMINI_STAGE_DIR = OUTPUT_ROOT / "gemini"
 FILTERED_STAGE_ROOT = OUTPUT_ROOT / "filtered"

@@ -14,6 +14,7 @@ from privacy_pipeline.json_utils import list_attribute_values, merge_filtered_ou
 from privacy_pipeline.utils import (
     FILTERED_STAGE_ROOT,
     GEMINI_STAGE_DIR,
+    LOGS_DIR,
     MODELS_DIR,
     OUTPUT_ROOT,
     VISUALIZATION_ROOT,
@@ -559,7 +560,7 @@ def _add_common_gemini_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_logging(verbose: bool, command: str, filter_slug: Optional[str] = None) -> Path:
-    log_dir = Path("logs")
+    log_dir = LOGS_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
     log_suffix = command.replace("-", "_") if command else "privacy_pipeline"
     if filter_slug:

@@ -75,7 +75,7 @@ Key configuration (`dataset` in `config.yaml`):
 Each record only stores metadata; pixel data stays on disk. The notebooks rely on this file for lookups, so keep it around even after cleaning.
 
 ### 2. Run YOLOE detections
-**Purpose**: detect potentially sensitive classes before escalating to Gemini. The runner loads `models/yoloe-11l-seg.pt`, remaps classes listed in `privacy_pipeline/yoloe_classes.txt`, writes the mapping to `config/yoloe_custom_mapping.txt`, and only records images with detections to keep JSONL sizes manageable.
+**Purpose**: detect potentially sensitive classes before escalating to Gemini. The runner loads `models/yoloe-11l-seg.pt`, remaps classes listed in `config/yoloe_classes.txt`, writes the mapping to `logs/yoloe_custom_mapping.txt`, and only records images with detections to keep JSONL sizes manageable.
 
 ```bash
 python -m privacy_pipeline.cli yoloe output/image_index.jsonl \
@@ -260,7 +260,7 @@ merge_filtered:
 - `output/`: canonical location for stage JSONLs (`image_index.jsonl`, `yoloe_output.jsonl`, `gemini_output.jsonl`, `gemini_output_cleaned.jsonl`).
 - `output/visualizations/yoloe/`: optional overlay PNGs mirroring the original directory structure.
 - `output/gemini/`: contains `batches/`, `gemini_jobs.json`, `gemini_outputs/`, and cleaned exports. Filter-specific runs mirror this structure under `output/filtered/gemini/<slug>/`.
-- `models/`: YOLOE checkpoints plus auto-generated custom weights (`*-custom.pt`) and the latest `config/yoloe_custom_mapping.txt`.
+- `models/`: YOLOE checkpoints plus auto-generated custom weights (`*-custom.pt`). The latest `logs/yoloe_custom_mapping.txt` mirrors the detector's class order so you can interpret detections later.
 - `logs/`: every CLI run logs to `logs/<command>.log`, or `logs/<command>_<filter-slug>.log` when filters are in play.
 
 Always keep the index and cleaned outputs under version control or archival storage if you need to reproduce findings later.

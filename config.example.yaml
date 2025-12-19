@@ -42,7 +42,22 @@ yoloe:
 # Controls batch preparation, upload/submission, and output parsing.
 gemini:
   # Prompt passed to Gemini for OCR/classification
-  prompt: "<your prompt>"
+  prompt: "Analyze the following images, which are all from the same scene.
+    1. Combine Text:
+    Under the heading `## Combined Text ##`, combine all readable text from all images into a single, coherent block. Only respond with text that actually visible in the image, DO NOT make up or text that you are unsure of from blurry parts of the image.  
+
+    2. Analyze and Flag:
+    Review the synthesized text and the images for any sensitive data. If sensitive data is found, you must provide **only one additional line** as your response, starting with `#FLAG:` followed by a comma-separated list of all categories violated.
+
+    Categories:
+    *   PII: Names, addresses, phone numbers, emails.
+    *   CONFIDENTIAL_INFO: Schematics, source code, internal documents, proprietary notes.
+    *   SECURITY_INFO: Passwords, network names, access codes.
+    *   MACHINE_READABLE_CODE: QR codes, barcodes.
+    *   BRANDING_LOGOS: Company logos, trademarks, etc.
+    *   OTHER: Any other clearly sensitive information not covered above.
+
+    Ignore references to the FRANKA EMIKA robot arm in this analysis, as it is the subject of the dataset.
   # YOLOE classes that trigger Gemini processing
   classes_to_forward: [person, screen]
   # Minimum YOLOE confidence required to forward a detection to Gemini
@@ -55,6 +70,8 @@ gemini:
   output_batch_dir: gemini_batches
   # Optional bucket/project details for uploads and submissions
   gcs_bucket: your-bucket
+  gcs_output_bucket: your-output-bucket
+  gcs_output_prefix: gemini_outputs
   project: your-gcp-project
   # Optional location and model overrides
   location: us-central1
@@ -66,7 +83,7 @@ gemini:
   # Optional filters to restrict which detections are forwarded
   attribute_filters:
     scene: scene-01
-  # Optional override for allowed #FLAG categories and their descriptions
+  # Optional override for allowed #FLAG categories
   flag_categories:
     - PII
     - CONFIDENTIAL_INFO
@@ -74,10 +91,3 @@ gemini:
     - MACHINE_READABLE_CODE
     - BRANDING_LOGOS
     - OTHER
-  flag_category_descriptions:
-    PII: Personally identifiable information
-    CONFIDENTIAL_INFO: Sensitive or confidential content
-    SECURITY_INFO: Security-related details (passwords, keys, etc.)
-    MACHINE_READABLE_CODE: Barcodes, QR codes, or other machine-readable markings
-    BRANDING_LOGOS: Logos or branded imagery
-    OTHER: Other content requiring review

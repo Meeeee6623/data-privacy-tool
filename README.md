@@ -34,66 +34,74 @@ Commands are provided via `python -m privacy_pipeline.cli`:
 ```bash
 # 1) Build an image index
 python -m privacy_pipeline.cli index /path/to/images \
-  --output image_index.jsonl \
+  --output output/image_index.jsonl \
   --recursive \
   --path-attributes lab building scene \
   --path-attribute-map lab:3 building:2 scene:1
 
-# 2) Run YOLOE (uses yoloe-11l-seg.pt and packaged classes by default)
-python -m privacy_pipeline.cli yoloe image_index.jsonl \
-  --threshold 0.5 --visualize --viz-dir yoloe_viz \
-  --output yoloe_output.jsonl
+# 2) Run YOLOE (uses models/yoloe-11l-seg.pt and packaged classes by default)
+python -m privacy_pipeline.cli yoloe output/image_index.jsonl \
+  --threshold 0.5 --visualize --viz-dir output/visualizations/yoloe \
+  --output output/yoloe_output.jsonl
 
 # 3) Prepare Gemini batches
-python -m privacy_pipeline.cli prepare-gemini yoloe_output.jsonl \
+python -m privacy_pipeline.cli prepare-gemini output/yoloe_output.jsonl \
  --prompt "<your prompt>" \
   --classes person screen --threshold 0.5 --scene-level 2 \
-  --batch-dir gemini_batches --gcs-bucket your-bucket --project your-gcp-project
+  --batch-dir output/gemini/batches --gcs-bucket your-bucket --project your-gcp-project
 
 # 4) Submit batches (requires GCP access)
-python -m privacy_pipeline.cli submit-gemini gemini_batches \
+python -m privacy_pipeline.cli submit-gemini output/gemini/batches \
   --gcs-bucket your-bucket --gcs-output-bucket your-output-bucket \
   --project your-gcp-project
 
 # 4b) Check batch job status (names or stored jobs file)
-python -m privacy_pipeline.cli status-gemini --jobs-file gemini_jobs.json
+python -m privacy_pipeline.cli status-gemini --jobs-file output/gemini/gemini_jobs.json
 python -m privacy_pipeline.cli status-gemini jobname-123 another-job
 # The jobs file stores objects of the form {"name": "...", "output_uri": "gs://..."}
 # so downloads can use the recorded destinations directly.
 
 # 5) Download Gemini outputs once jobs finish
-python -m privacy_pipeline.cli download-gemini --jobs-file gemini_jobs.json \
-  --output-dir gemini_outputs
+python -m privacy_pipeline.cli download-gemini --jobs-file output/gemini/gemini_jobs.json \
+  --output-dir output/gemini/gemini_outputs
 
 # 6) Clean and merge Gemini logs
 python -m privacy_pipeline.cli clean-gemini \
-  --outputs-dir gemini_outputs \
-  --original-index image_index.jsonl \
-  --output gemini_output_cleaned.jsonl \
+  --outputs-dir output/gemini/gemini_outputs \
+  --original-index output/image_index.jsonl \
+  --output output/gemini_output_cleaned.jsonl \
   --flag-categories PII CONFIDENTIAL_INFO
 
 # Inspect or merge JSONL files
-python -m privacy_pipeline.cli json-utils list-values image_index.jsonl --attributes lab building
-python -m privacy_pipeline.cli json-utils summarize yoloe_output.jsonl --attributes lab building --filter lab=alpha --filter building=main
-python -m privacy_pipeline.cli json-utils merge-filtered yoloe --output merged_yoloe_output.jsonl
+python -m privacy_pipeline.cli json-utils list-values output/image_index.jsonl --attributes lab building
+python -m privacy_pipeline.cli json-utils summarize output/yoloe_output.jsonl --attributes lab building --filter lab=alpha --filter building=main
+python -m privacy_pipeline.cli json-utils merge-filtered yoloe --output output/merged_yoloe_output.jsonl
 ```
+
+All generated artifacts now live under `output/`:
+- Stage JSONL outputs such as `image_index.jsonl`, `yoloe_output.jsonl`, and cleaned Gemini results.
+- `output/gemini/` – batches, submitted job metadata, raw Gemini downloads, and filtered Gemini runs.
+- `output/visualizations/` – YOLOE visualization PNGs (with filter-specific runs kept under `output/filtered/yoloe/<slug>/visualizations`).
+- `output/filtered/` – per-filter subdirectories for both YOLOE and Gemini stages.
+
+YOLOE checkpoints and customized weights now live under `models/`, keeping the repo root clean.
 
 ### YAML configuration
 
 All pipeline CLI options can be provided via a YAML file and overridden by
-explicit CLI flags. Pipeline commands automatically load `config.yaml` from the
-current working directory when present. You can also point to any file
-explicitly with `--config path/to/config.yaml`.
+explicit CLI flags. Pipeline commands automatically load `config/config.yaml`
+when present. You can also point to any file explicitly with
+`--config path/to/config.yaml`.
 
 JSON utility commands (`json-utils ...`) read their defaults from a separate
 file so they can be configured independently. By default, the CLI loads
-`json_utils.config.yaml` when present, but you can override this with
+`config/json_utils.config.yaml` when present, but you can override this with
 `--config path/to/json_utils.config.yaml`.
 
-An exhaustive example is provided at `config.example.yaml`; copy it to
-`config.yaml` and edit it to match your environment. A companion
-`json_utils.config.example.yaml` is also included; copy it to
-`json_utils.config.yaml` to opt into defaults for the JSON helpers.
+An exhaustive example is provided at `config/config.example.yaml`; copy it to
+`config/config.yaml` and edit it to match your environment. A companion
+`config/json_utils.config.example.yaml` is also included; copy it to
+`config/json_utils.config.yaml` to opt into defaults for the JSON helpers.
 
 Example:
 
@@ -104,14 +112,14 @@ dataset:
   path_attributes: [lab, building, scene]
   path_attribute_map: {lab: 3, building: 2, scene: 1}
   user_jsonl: /path/to/custom_attributes.jsonl
-  output_jsonl: image_index.jsonl
+  output_jsonl: output/image_index.jsonl
 
 yoloe:
-  model_path: yoloe-11l-seg.pt
+  model_path: models/yoloe-11l-seg.pt
   threshold: 0.5
   visualize: false
-  visualization_dir: yoloe_visualizations
-  output_jsonl: yoloe_output.jsonl
+  visualization_dir: output/visualizations/yoloe
+  output_jsonl: output/yoloe_output.jsonl
   attribute_filters: {lab: example-lab}
 
 gemini:
@@ -120,24 +128,24 @@ gemini:
   min_confidence: 0.5
   scene_directory_level: 2
   max_batch_size_bytes: 1981808640
-  output_batch_dir: gemini_batches
+  output_batch_dir: output/gemini/batches
   gcs_bucket: your-bucket
   gcs_output_bucket: your-output-bucket
   gcs_output_prefix: gemini_outputs
   project: your-gcp-project
-  submitted_jobs_file: gemini_jobs.json
-  final_output_jsonl: gemini_output.jsonl
+  submitted_jobs_file: output/gemini/gemini_jobs.json
+  final_output_jsonl: output/gemini_output.jsonl
 ```
 
-Example `json_utils.config.yaml`:
+Example `config/json_utils.config.yaml`:
 
 ```yaml
 list_values:
-  inputs: [image_index.jsonl]
+  inputs: [output/image_index.jsonl]
   attributes: [lab, building]
 
 summarize:
-  inputs: [yoloe_output.jsonl]
+  inputs: [output/yoloe_output.jsonl]
   attributes: [lab, building]
   filters:
     - lab=alpha
@@ -145,18 +153,18 @@ summarize:
 
 merge_filtered:
   stage: yoloe
-  base_dir: filtered
-  output: merged_yoloe_output.jsonl
+  base_dir: output/filtered
+  output: output/merged_yoloe_output.jsonl
 ```
 
 With this file in place, running `python -m privacy_pipeline.cli prepare-gemini`
-loads defaults from `config.yaml` automatically and only needs CLI overrides
+loads defaults from `config/config.yaml` automatically and only needs CLI overrides
 for values that should differ from the file.
 
 The YOLOE runner automatically downloads the requested checkpoint (defaulting to
-`yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`
+`models/yoloe-11l-seg.pt`), remaps the classes from `privacy_pipeline/yoloe_classes.txt`
 to match `yoloe_test.ipynb`, saves the customized weights alongside the original
-model file, and writes a `yoloe_custom_mapping.txt` next to the YOLOE output.
+model file, and writes a `config/yoloe_custom_mapping.txt`.
 
 Notes:
 - `--scene-level` controls how far up the directory tree to group images into a
@@ -168,7 +176,7 @@ Notes:
   are sent for OCR/classification.
 - `--max-bytes` can be adjusted if GCP batch limits change (default 1.85 GB).
 - When attribute filters are provided for YOLOE or Gemini, outputs are stored
-  under `filtered/<stage>/` using the filter slug in the filename (e.g.,
-  `filtered/yoloe/lab-alpha.jsonl`) so parallel filtered runs cannot clobber
+  under `output/filtered/<stage>/` using the filter slug in the filename (e.g.,
+  `output/filtered/yoloe/lab-alpha.jsonl`) so parallel filtered runs cannot clobber
   each other. Use `json-utils merge-filtered <stage>` to combine the filtered
   JSONL files back into a single stage output.

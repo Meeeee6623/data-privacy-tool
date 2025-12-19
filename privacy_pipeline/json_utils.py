@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from privacy_pipeline.utils import filter_slug
+from privacy_pipeline.utils import FILTERED_STAGE_ROOT, filter_slug
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,10 @@ def summarize_attributes(
 
 
 def merge_filtered_outputs(
-    stage: str, filename: Optional[str] = None, base_dir: Path = Path("filtered"), output_path: Optional[Path] = None
+    stage: str,
+    filename: Optional[str] = None,
+    base_dir: Path = FILTERED_STAGE_ROOT,
+    output_path: Optional[Path] = None,
 ) -> Path:
     """Merge filter-specific JSONL files for a pipeline stage into a single output."""
 

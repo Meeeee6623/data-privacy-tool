@@ -1,0 +1,19 @@
+# Example configuration for JSON utilities.
+# Copy this file to `config/json_utils.config.yaml` to have it picked up automatically
+# when running `python -m privacy_pipeline.cli json-utils ...`.
+# OR just pass in your own arguments in the CLI directly.
+
+list_values:
+  inputs: [output/image_index.jsonl]
+  attributes: [lab, building]
+
+summarize:
+  inputs: [output/yoloe_output.jsonl]
+  attributes: [lab, building]
+  filters:
+    - {lab: alpha}
+
+merge_filtered:
+  stage: yoloe
+  base_dir: output/filtered
+  output: output/merged_yoloe_output.jsonl

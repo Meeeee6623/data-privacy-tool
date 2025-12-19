@@ -2,6 +2,13 @@ import re
 from pathlib import Path
 from typing import Dict, Optional
 
+OUTPUT_ROOT = Path("output")
+CONFIG_DIR = Path("config")
+VISUALIZATION_ROOT = OUTPUT_ROOT / "visualizations"
+GEMINI_STAGE_DIR = OUTPUT_ROOT / "gemini"
+FILTERED_STAGE_ROOT = OUTPUT_ROOT / "filtered"
+MODELS_DIR = Path("models")
+
 
 def filter_slug(filters: Optional[Dict[str, str]]) -> str:
     """Return a filesystem-friendly slug for a filter mapping.
@@ -23,4 +30,4 @@ def filter_slug(filters: Optional[Dict[str, str]]) -> str:
 def filtered_stage_dir(stage: str, filters: Optional[Dict[str, str]]) -> Path:
     """Return the directory to store outputs for a filter-specific run."""
 
-    return Path("filtered") / stage / filter_slug(filters)
+    return FILTERED_STAGE_ROOT / stage / filter_slug(filters)

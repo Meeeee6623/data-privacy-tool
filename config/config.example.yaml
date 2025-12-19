@@ -1,5 +1,5 @@
 # Example configuration covering all available options for the privacy pipeline.
-# Copy this file to `config.yaml` to have it picked up automatically by the CLI.
+# Copy this file to `config/config.yaml` to have it picked up automatically by the CLI.
 
 # Dataset indexing options
 # Controls how image metadata is collected from the filesystem and any user JSONL.
@@ -18,21 +18,21 @@ dataset:
   # Optional JSONL to merge in user-provided attributes
   user_jsonl: /path/to/custom_attributes.jsonl
   # Output JSONL containing the image index
-  output_jsonl: image_index.jsonl
+  output_jsonl: output/image_index.jsonl
 
 # YOLOE inference options
 # Configures thresholds, visualization, and filtering for the detector.
 yoloe:
   # Path to the YOLOE checkpoint; downloaded automatically if missing
-  model_path: yoloe-11l-seg.pt
+  model_path: models/yoloe-11l-seg.pt
   # Confidence threshold for detections
   threshold: 0.5
   # Whether to save visualization images alongside detections
   visualize: false
   # Where to store visualization images (only used when visualize is true)
-  visualization_dir: yoloe_visualizations
+  visualization_dir: output/visualizations/yoloe
   # Output JSONL containing YOLOE detections
-  output_jsonl: yoloe_output.jsonl
+  output_jsonl: output/yoloe_output.jsonl
   # Optional filters to restrict which index records are processed
   attribute_filters:
     lab: example-lab
@@ -67,7 +67,7 @@ gemini:
   # Maximum batch size (in bytes) for Gemini upload
   max_batch_size_bytes: 1981808640  # 1.85 GB
   # Directory where batch JSONL files are written
-  output_batch_dir: gemini_batches
+  output_batch_dir: output/gemini/batches
   # Optional bucket/project details for uploads and submissions
   gcs_bucket: your-bucket
   gcs_output_bucket: your-output-bucket
@@ -77,9 +77,9 @@ gemini:
   location: us-central1
   model: gemini-2.5-flash
   # Path where submitted job names are tracked
-  submitted_jobs_file: gemini_jobs.json
+  submitted_jobs_file: output/gemini/gemini_jobs.json
   # Final parsed output JSONL path
-  final_output_jsonl: gemini_output.jsonl
+  final_output_jsonl: output/gemini_output.jsonl
   # Optional filters to restrict which detections are forwarded
   attribute_filters:
     scene: scene-01

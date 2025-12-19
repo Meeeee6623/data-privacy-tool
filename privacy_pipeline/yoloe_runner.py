@@ -8,6 +8,7 @@ from PIL import Image
 from ultralytics import YOLOE
 
 from privacy_pipeline.config import YoloEConfig
+from privacy_pipeline.utils import CONFIG_DIR, VISUALIZATION_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ def _load_classes(classes_path: Path) -> List[str]:
 
 
 def _save_class_mapping(output_dir: Path, classes: List[str]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
     mapping_path = output_dir / "yoloe_custom_mapping.txt"
     with mapping_path.open("w") as f:
         for idx, name in enumerate(classes):
@@ -29,7 +31,7 @@ def _save_class_mapping(output_dir: Path, classes: List[str]) -> Path:
     return mapping_path
 
 
-def _load_custom_model(model_path: Path, classes_path: Path, output_dir: Path):
+def _load_custom_model(model_path: Path, classes_path: Path, mapping_dir: Path):
     classes = _load_classes(classes_path)
     model = YOLOE(str(model_path))
     logger.debug("Loaded YOLOE model from %s", model_path)
@@ -42,7 +44,7 @@ def _load_custom_model(model_path: Path, classes_path: Path, output_dir: Path):
     model.save(custom_model_path)
     logger.info("Saved customized YOLOE model to %s", custom_model_path)
 
-    mapping_path = _save_class_mapping(output_dir, classes)
+    mapping_path = _save_class_mapping(mapping_dir, classes)
     return model, custom_model_path, mapping_path
 
 
@@ -66,7 +68,7 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
     config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
 
     model, custom_model_path, mapping_path = _load_custom_model(
-        config.model_path, config.classes_path, config.output_jsonl.parent
+        config.model_path, config.classes_path, CONFIG_DIR
     )
     logger.info(
         "Model ready. Custom weights: %s. Class mapping: %s",
@@ -90,7 +92,7 @@ def run_yoloe(index_jsonl: Path, config: YoloEConfig) -> Path:
 
     viz_dir: Optional[Path] = None
     if config.visualize:
-        viz_dir = config.visualization_dir or config.output_jsonl.parent / "yoloe_visualizations"
+        viz_dir = config.visualization_dir or VISUALIZATION_ROOT / "yoloe"
         viz_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Saving YOLOE visualizations to %s", viz_dir)
 

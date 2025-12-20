@@ -8,6 +8,8 @@ dataset:
   image_root: /path/to/images
   # Whether to recurse into subdirectories while globbing images
   recursive: true
+  # Directory depth used to group images into scenes (1 = immediate parent)
+  scene_grouping_level: 2
   # Optional attributes derived from the directory hierarchy (root-relative)
   path_attributes: [lab, building, scene]
   # Optional attributes derived from walking up the file path (1 = parent dir)
@@ -62,8 +64,6 @@ gemini:
   classes_to_forward: [person, screen]
   # Minimum YOLOE confidence required to forward a detection to Gemini
   min_confidence: 0.5
-  # Directory depth used to group images into scenes (1 = immediate parent)
-  scene_directory_level: 2
   # Maximum batch size (in bytes) for Gemini upload
   max_batch_size_bytes: 1981808640  # 1.85 GB
   # Directory where batch JSONL files are written

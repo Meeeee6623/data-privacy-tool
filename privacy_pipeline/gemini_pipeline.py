@@ -105,7 +105,7 @@ def _load_scene_attributes(original_index: Optional[Path], config: GeminiConfig)
     for record in _load_yolo_output(original_index):
         if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
             continue
-        scene_path = str(_scene_root(Path(record["image_path"]), config.scene_directory_level))
+        scene_path = str(_scene_root(Path(record["image_path"]), config.scene_grouping_level))
         scene_to_attributes.setdefault(scene_path, record.get("attributes", {}))
     return scene_to_attributes
 
@@ -118,7 +118,7 @@ def collect_flagged_scenes(yolo_output: Path, config: GeminiConfig) -> Dict[Path
         if not _matches_filters(record.get("attributes", {}), config.attribute_filters):
             continue
         image_path = Path(record["image_path"])
-        scene_path = _scene_root(image_path, config.scene_directory_level)
+        scene_path = _scene_root(image_path, config.scene_grouping_level)
         all_images[scene_path].append(str(image_path))
 
         for detection in record.get("detections", []):

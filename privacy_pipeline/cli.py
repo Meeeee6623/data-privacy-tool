@@ -354,6 +354,7 @@ def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> D
         raise ValueError("image_root must be provided via CLI or config file")
 
     recursive = _coerce_bool(args.recursive, dataset_cfg.get("recursive"), True)
+    scene_grouping_level = int(dataset_cfg.get("scene_grouping_level", 1))
     path_attributes = args.path_attributes if args.path_attributes is not None else dataset_cfg.get("path_attributes")
     path_attribute_map = (
         _parse_attribute_map(args.path_attribute_map)
@@ -370,6 +371,7 @@ def _build_dataset_config(args: argparse.Namespace, config: Dict[str, Any]) -> D
     dataset_config = DatasetConfig(
         image_root=image_root,
         recursive=recursive,
+        scene_grouping_level=scene_grouping_level,
         path_attributes=path_attributes,
         path_attribute_map=path_attribute_map,
         user_jsonl=user_jsonl,
@@ -427,6 +429,7 @@ def _build_gemini_config(
     args: argparse.Namespace, config: Dict[str, Any], require_prompt: bool = True
 ) -> GeminiConfig:
     gemini_cfg = config.get("gemini", {}) if isinstance(config, dict) else {}
+    dataset_cfg = config.get("dataset", {}) if isinstance(config, dict) else {}
 
     prompt_arg = _arg_value(args, "prompt")
     prompt = prompt_arg if prompt_arg is not None else gemini_cfg.get("prompt")
@@ -438,7 +441,19 @@ def _build_gemini_config(
     threshold_arg = _arg_value(args, "threshold")
     min_confidence = threshold_arg if threshold_arg is not None else gemini_cfg.get("min_confidence", 0.5)
     scene_level_arg = _arg_value(args, "scene_level")
-    scene_level = scene_level_arg if scene_level_arg is not None else gemini_cfg.get("scene_directory_level", 1)
+    dataset_scene_level = dataset_cfg.get("scene_grouping_level")
+    legacy_scene_level = gemini_cfg.get("scene_directory_level") or dataset_cfg.get("scene_directory_level")
+    if dataset_scene_level is None:
+        dataset_scene_level = gemini_cfg.get("scene_grouping_level")
+    scene_level = (
+        int(scene_level_arg)
+        if scene_level_arg is not None
+        else int(dataset_scene_level)
+        if dataset_scene_level is not None
+        else int(legacy_scene_level)
+        if legacy_scene_level is not None
+        else 1
+    )
     max_bytes_arg = _arg_value(args, "max_bytes")
     max_batch_size = max_bytes_arg if max_bytes_arg is not None else gemini_cfg.get("max_batch_size_bytes", 1.85 * 1024 ** 3)
     base_batch_dir = GEMINI_STAGE_DIR / "batches"
@@ -492,7 +507,7 @@ def _build_gemini_config(
         prompt=prompt or "",
         classes_to_forward=classes_to_forward,
         min_confidence=min_confidence,
-        scene_directory_level=scene_level,
+        scene_grouping_level=scene_level,
         max_batch_size_bytes=max_batch_size,
         output_batch_dir=output_batch_dir,
         gcs_bucket=gcs_bucket,

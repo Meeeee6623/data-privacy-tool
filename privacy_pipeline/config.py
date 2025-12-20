@@ -11,6 +11,7 @@ class DatasetConfig:
 
     image_root: Path
     recursive: bool = True
+    scene_grouping_level: int = 1
     path_attributes: Optional[List[str]] = None
     # Optional mapping of attribute name -> levels up from the image file (1 = parent directory)
     path_attribute_map: Optional[Dict[str, int]] = None
@@ -39,7 +40,7 @@ class GeminiConfig:
     prompt: str
     classes_to_forward: Optional[List[str]] = None
     min_confidence: float = 0.5
-    scene_directory_level: int = 1
+    scene_grouping_level: int = 1
     max_batch_size_bytes: float = 1.85 * 1024 ** 3
     output_batch_dir: Path = GEMINI_STAGE_DIR / "batches"
     gcs_bucket: Optional[str] = None

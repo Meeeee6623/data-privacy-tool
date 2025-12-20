@@ -95,7 +95,7 @@ Key configuration (`yoloe`):
 **Notebook tie-in**: use `notebooks/yoloe_stage_explorer.ipynb` to slice detections by attribute/class, review Plotly charts, and preview top matches before adjusting thresholds. The notebook auto-discovers base outputs plus anything under `output/filtered/yoloe/*`.
 
 ### 3. Prepare Gemini batches
-**Purpose**: determine which “scenes” (folders defined by `scene_directory_level`) should be escalated to OCR, bundle their images, and emit JSONL batches sized for Vertex uploads.
+**Purpose**: determine which “scenes” (folders defined by the dataset `scene_grouping_level`) should be escalated to OCR, bundle their images, and emit JSONL batches sized for Vertex uploads.
 
 ```bash
 python -m privacy_pipeline.cli prepare-gemini \
@@ -111,7 +111,7 @@ python -m privacy_pipeline.cli prepare-gemini \
 Key configuration (`gemini`):
 - `prompt`: full Gemini instruction block (multi-line YAML string supported).
 - `classes_to_forward` + `min_confidence`: detections that trigger escalation.
-- `scene_directory_level`: how many directory levels to climb to form a scene (1 = parent folder).
+- `scene_grouping_level`: configured under `dataset` (or overridden via `--scene-level`) to control how many directory levels to climb to form a scene (1 = parent folder).
 - `max_batch_size_bytes`: default 1.85 GB cap so uploads stay under Vertex thresholds.
 - `output_batch_dir`: typically `output/gemini/batches`, or a filter-specific directory when `attribute_filters` are provided.
 
@@ -202,6 +202,7 @@ Example `config/config.yaml` (trimmed):
 dataset:
   image_root: /data/images
   recursive: true
+  scene_grouping_level: 2
   path_attributes: [lab, building, scene]
   path_attribute_map: {lab: 3, building: 2, scene: 1}
   user_jsonl: data/manual_annotations.jsonl
@@ -220,7 +221,6 @@ gemini:
     Analyze the following images from the same scene...
   classes_to_forward: [person, screen]
   min_confidence: 0.5
-  scene_directory_level: 2
   max_batch_size_bytes: 1981808640
   output_batch_dir: output/gemini/batches
   gcs_bucket: privacy-pipeline-inputs

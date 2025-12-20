@@ -1,277 +1,243 @@
 # Data Privacy Tool
-Pipeline for screening large image corpora for sensitive data before publication. The tool chains YOLOE detections with Gemini OCR to surface PII, internal documents, barcodes, and other risky content, and ships ready-made notebooks for visual validation.
 
-## Goals & Highlights
-- Normalize any folder hierarchy into a JSONL index so downstream stages share the same metadata.
-- Run YOLOE detections with customizable confidence thresholds, class remapping, attribute filters, and optional visualization exports.
-- Escalate risky “scenes” (all images in a directory level) to Gemini with a single prompt, batching automatically under GCP limits and resuming from checkpoints.
-- Track, download, clean, and enrich Gemini outputs so analysts can focus on flagged categories across labs/buildings/scenes.
-- Explore detections and OCR results interactively in the included Plotly + ipywidgets notebooks.
-- Keep all artifacts in `output/` (or `output/filtered/<stage>/<slug>` when filters are used) so every run is reproducible.
+- [Overview](#overview)
+- [Requirements](#requirements)
+- [Notes](#notes)
+- [Pipeline Steps](#pipeline-steps)
+  - [1. Indexing](#1-indexing)
+  - [2. YOLOE Detection](#2-yoloe-detection)
+  - [3. Gemini OCR + Classification](#3-gemini-ocr--classification)
+- [Configuration Reference](#configuration-reference)
+- [JSON Utilities](#json-utilities)
+- [Visualization Notebooks](#visualization-notebooks)
 
----
+## Overview
+This tool is broken down into a pipeline with 3 main stages: Indexing, YOLOE detection, and Gemini OCR + classification. The indexing stage ingests all images in some root folder and categorizes them, inferring attributes from the image paths. Having these attribute fields is useful for sorting through/filtering images later, as well as separating sets of images for parallel processing. If you have other attributes you would like to tie to your images, you can pass those in from a file as well. For later stages and for [visualization notebooks](#visualization-notebooks), it is assumed that images from some folder level come from the same collection time (for example, for `room/timestamp/cameraX/images` you could group all images for each timestamped collection together). The level at which this split happens is configurable.
 
-## Requirements & Installation
-1. **Python 3.13+** with GPU-enabled PyTorch if you intend to run YOLOE on GPU.
-2. **Google Cloud credentials** with access to Vertex Gemini and the buckets you plan to use (`GOOGLE_APPLICATION_CREDENTIALS` works well locally).
-3. Install dependencies inside your preferred virtual environment:
-   ```bash
-   uv sync  # or: pip install -e .
-   ```
-   The `pyproject.toml` declares `ultralytics`, `torch`, `google-genai`, `google-cloud-storage`, `pandas`, `plotly`, `ipywidgets`, and Jupyter.
-4. Optional: download the default YOLOE checkpoint into `models/` ahead of time to avoid on-demand fetches.
+Next, the YOLOE stage helps to narrow down the search space of images by searching for a set of custom classes. It also optionally generates visualizations of the detections. There is a Jupyter notebook to make looking through detections easy, with dropdowns to filter by attributes.
 
-All commands are executed via `python -m privacy_pipeline.cli ...`. The CLI automatically loads `config/config.yaml` when present (override with `--config path/to/config.yaml`).
+Last is the Gemini OCR stage. This stage uses Gemini Flash to attempt to extract any readable text from images, as well as classify images with privacy leaks into broad categories for filtering. For every image with a detection from YOLOE, it groups all images from that "scene" and adds them to a single request, encoding all requests in JSONL files to upload to GCP Vertex batch processing. Then it can submit the jobs for you, check job status, download the jobs, and extract the relevant parts of the responses. There is another Google/Colab-style notebook for visualizing these responses.
 
----
+Note: If there is a need for handlers for other LLM apis/cloud providers, feel free to reach out to me and I can help out (or submit a pull request!)
+## Requirements
+- Python 3.13+, GPU recommended for running YOLOE
+- Google Cloud account with Vertex AI Gemini access (batch jobs are used for the 50% discount mentioned in the [Gemini section](#3-gemini-ocr--classification))
+- `uv` for dependency management. Install everything with:
+  ```bash
+  uv sync
+  # or: uv venv && uv pip install -e .
+  ```
+- All Python dependencies are declared in `pyproject.toml`, so the CLI can also be run via `python -m privacy_pipeline.cli ...` once synced
 
-## Pipeline at a Glance
-```
-images -> index -> yoloe -> prepare gemini -> submit -> check -> download -> clean -> notebooks/json-utils
-```
-1. **Index**: glob images, derive attributes from directory structure, merge user metadata.
-2. **YOLOE**: detect configured classes, optionally emit overlay PNGs.
-3. **Prepare Gemini**: determine scenes needing review (class + confidence filters) and create <=1.85 GB batch JSONLs.
-4. **Submit & Check**: upload batches to GCS, create Vertex Gemini jobs, and poll their status.
-5. **Download**: fetch job outputs and track them alongside submissions.
-6. **Clean**: strip inline payloads, parse `#FLAG[...]` markers, attach scene attributes, and write clean JSONL.
-7. **Explore**: use notebooks or `json-utils` to analyze detections/flags, merge filtered runs, or summarize coverage.
+## Notes
+This tool requires all input files to be images; use `ffmpeg` to convert videos to images before indexing and keep the folder hierarchy consistent with how you intend to group scenes.
 
-Quick start run (assuming `config/config.yaml` mirrors your environment):
+Example commands (overwrite `frames/%05d.png` as needed):
 ```bash
-python -m privacy_pipeline.cli index /data/images
-python -m privacy_pipeline.cli yoloe
-python -m privacy_pipeline.cli prepare-gemini --prompt "$(cat prompts/gemini_prompt.txt)"
-python -m privacy_pipeline.cli submit-gemini
-python -m privacy_pipeline.cli check-gemini
-python -m privacy_pipeline.cli download-gemini
-python -m privacy_pipeline.cli clean-gemini --original-index output/image_index.jsonl
+# 1 fps extraction at high quality
+ffmpeg -i input.mp4 -vf fps=1 -qscale:v 1 frames/frame_%05d.png
+
+# Full FPS extraction at source rate and quality
+ffmpeg -i input.mp4 -qscale:v 1 frames/full_%05d.png
+
+# First, middle, last frames only (stored as frame_01.png, frame_02.png, frame_03.png)
+TOTAL=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 input.mp4); \
+MID=$((TOTAL/2)); LAST=$((TOTAL-1)); \
+ffmpeg -i input.mp4 -vf "select='eq(n,0)+eq(n,$MID)+eq(n,$LAST)'" -vsync 0 -qscale:v 1 frames/frame_%02d.png
 ```
 
----
+## Pipeline Steps
+The CLI is exposed as `python -m privacy_pipeline.cli <command>` and it automatically loads `config/config.yaml` (copy `config/config.example.yaml` to get started). Every stage writes JSONL outputs to `output/` by default, and when you add `--attribute-filter` the results are redirected into `output/filtered/<stage>/<filter-slug>/...` so you can parallelize slices and merge them later (see [JSON Utilities](#json-utilities)).
 
-## Pipeline Walkthrough
+### 1. Indexing
+**Goal**: flatten a folder tree of images into a JSONL with friendly metadata so subsequent stages and notebooks can reason about scenes.
 
-### 1. Build the dataset index
-**Purpose**: turn an arbitrary folder hierarchy into a structured JSONL (`image_path`, `attributes`). Supports optional recursion, attribute derivation, and user-provided metadata merges.
+Ways to attach attributes during indexing:
+- **Path-derived fields**: `--path-attributes lab building scene` labels each level under the root.
+- **Levels-up mapping**: `--path-attribute-map lab:3 building:2 scene:1` climbs up relative to the image itself (useful when the folder structure is `camera/images`).
+- **External metadata**: `--user-jsonl data/extra_attributes.jsonl` merges arbitrary attributes (e.g., shift ID, operator, experiment ID) by aligning on `image_path`.
 
+Example full run and a variant focused on a strict folder depth:
 ```bash
+# Standard end-to-end index, recursive crawl, writes to output/image_index.jsonl
 python -m privacy_pipeline.cli index /data/images \
-  --output output/image_index.jsonl \
-  --recursive \
   --path-attributes lab building scene \
   --path-attribute-map lab:3 building:2 scene:1 \
   --user-jsonl data/manual_annotations.jsonl
+
+# Index a single collection level (scene_level=2 set later in config) and override output
+python -m privacy_pipeline.cli index /datasets/run42 --output output/run42_index.jsonl --no-recursive
 ```
 
-Key configuration (`dataset` in `config.yaml`):
-- `image_root` (required): root folder to crawl.
-- `recursive`: include subdirectories (default `true`).
-- `path_attributes`: attribute names mapped to directory segments relative to the root.
-- `path_attribute_map`: attribute → “levels up from file” (e.g., `lab:3`).
-- `user_jsonl`: optional JSONL with additional `image_path` + `attributes`.
-- `output_jsonl`: where the index is written (`output/image_index.jsonl` by default).
+Key configuration links for indexing (see [Configuration Reference](#configuration-reference)):
+- `dataset.image_root`, `dataset.recursive`, and `dataset.scene_grouping_level` define which files become rows and how scenes are grouped.
+- `dataset.path_attributes` and `dataset.path_attribute_map` decide how attributes appear in notebooks and how filters can be applied later.
+- `dataset.user_jsonl` lets you merge spreadsheets or annotations; the CLI keeps user attributes even if the same image is re-indexed later.
 
-Each record only stores metadata; pixel data stays on disk. The notebooks rely on this file for lookups, so keep it around even after cleaning.
+Scene grouping is especially important downstream: for the assumptions outlined in the [Overview](#overview), choose the folder level that matches your capture fidelity (e.g., `scene_grouping_level: 2` to group by `session` in `lab/session/camera/image.png`).
 
-### 2. Run YOLOE detections
-**Purpose**: detect potentially sensitive classes before escalating to Gemini. The runner loads `models/yoloe-11l-seg.pt`, remaps classes listed in `config/yoloe_classes.txt`, writes the mapping to `logs/yoloe_custom_mapping.txt`, and only records images with detections to keep JSONL sizes manageable.
+### 2. YOLOE Detection
+**Goal**: run YOLOE on the indexed inventory to locate sensitive classes, optionally emit visualization overlays, and (optionally) apply attribute filters so expensive GPU runs can be sharded.
 
+How filtering works: `--attribute-filter lab=alpha building=west` limits the run to rows with those attributes. The CLI automatically writes detections and visualizations to `output/filtered/yoloe/lab-alpha_building-west/` so you can spawn multiple workers, one per slice. After the slices complete, merge them with `python -m privacy_pipeline.cli json-utils merge-filtered yoloe --base-dir output/filtered --output output/yoloe_output_merged.jsonl` before continuing, or run downstream stages with the same filters if you want to keep the slices independent.
+
+Commands you will use most often:
 ```bash
+# Run YOLOE on the full index, render visualizations, keep the default classes
+python -m privacy_pipeline.cli yoloe
+# Filtered run that only processes one lab/building pair and writes its own outputs
 python -m privacy_pipeline.cli yoloe output/image_index.jsonl \
-  --threshold 0.45 \
-  --visualize \
-  --viz-dir output/visualizations/yoloe \
-  --attribute-filter lab=alpha building=west
+  --attribute-filter lab=alpha building=west \
+  --model models/yoloe-11l-seg.pt \
+  --output output/filtered/yoloe/lab-alpha_building-west/yoloe_output.jsonl
 ```
 
-Key configuration (`yoloe`):
-- `model_path`: checkpoint to load (auto-downloaded if missing).
-- `threshold`: minimum confidence (default `0.5`).
-- `visualize`, `visualization_dir`: save overlay PNGs for detections only.
-- `output_jsonl`: defaults to `output/yoloe_output.jsonl` or `output/filtered/yoloe/<slug>/...` when attribute filters are applied.
-- `attribute_filters`: restrict which index records are processed. Filtered runs keep their own JSONL and visualization directory so you can run multiple slices in parallel.
+Important configuration options:
+- `config/yoloe_classes.txt`: List of default classes that YOLOE is configured to search for, change to look for other objects in images. 
+- `yoloe.model_path`: YOLOE checkpoint, downloaded into `models/` on demand.
+- `yoloe.threshold`: score threshold used both for JSONL detections and to decide which scenes get sent to Gemini.
+- `yoloe.visualize` and `yoloe.visualization_dir`: toggles overlay PNGs per detection.
+- `yoloe.output_jsonl`: base output path when no filter is provided.
+- `yoloe.attribute_filters`: Allows setting a filters to only run on images with certain attributes
 
-**Notebook tie-in**: use `notebooks/yoloe_stage_explorer.ipynb` to slice detections by attribute/class, review Plotly charts, and preview top matches before adjusting thresholds. The notebook auto-discovers base outputs plus anything under `output/filtered/yoloe/*`.
 
-### 3. Prepare Gemini batches
-**Purpose**: determine which “scenes” (folders defined by the dataset `scene_grouping_level`) should be escalated to OCR, bundle their images, and emit JSONL batches sized for Vertex uploads.
+### 3. Gemini OCR + Classification
+**Goal**: send YOLOE-positive scenes to Vertex AI Gemini (2.5 flash by default), batch requests for the 50% batch-discount pricing, keep all requests under the 2 GB Vertex limit, and return cleaned structured logs for analysis.
 
+This stage only targets **Google Cloud Vertex Batch**. Each record is encoded by embedding the prompt plus base64 versions of every PNG/JPEG in the scene directly into a JSON line. To stay within Vertex's 2 GB cap per batch request, the [`max_batch_size_bytes`](#configuration-reference) limit (1.85 GB by default) splits requests across files, and the [cleaning step](#35-clean--merge) merges the responses back.
+
+It is suggested to look through YOLOE visualizations to determine what classes/thresholds you want to use for this step. 
+
+#### 3.1 Prepare batches
 ```bash
+# Run over the merged YOLOE output and forward any person/screen detections >=0.5
 python -m privacy_pipeline.cli prepare-gemini \
   --yolo_output output/yoloe_output.jsonl \
   --prompt "$(cat prompts/gemini_prompt.txt)" \
   --classes person screen \
   --threshold 0.5 \
-  --scene-level 2 \
-  --batch-dir output/gemini/batches \
+
+# Parallel slice: only escalate scenes from lab alpha
+python -m privacy_pipeline.cli prepare-gemini \
   --attribute-filter lab=alpha
 ```
 
-Key configuration (`gemini`):
-- `prompt`: full Gemini instruction block (multi-line YAML string supported).
-- `classes_to_forward` + `min_confidence`: detections that trigger escalation.
-- `scene_grouping_level`: configured under `dataset` (or overridden via `--scene-level`) to control how many directory levels to climb to form a scene (1 = parent folder).
-- `max_batch_size_bytes`: default 1.85 GB cap so uploads stay under Vertex thresholds.
-- `output_batch_dir`: typically `output/gemini/batches`, or a filter-specific directory when `attribute_filters` are provided.
+For every detection that matches `classes_to_forward` and `min_confidence`, the CLI collects **all** images from that scene (leveraging `dataset.scene_grouping_level`) and places them in one JSONL record. Key configuration fields:
+- `gemini.prompt`: full text instructions sent alongside each scene (multiline YAML supported).
+- `gemini.classes_to_forward` + `gemini.min_confidence`: detection criteria. Leave blank for all classes at 0.5 threshold. 
+- `gemini.scene_grouping_level`: inherits from the dataset section unless overridden via `--scene-level`.
+- `gemini.max_batch_size_bytes`: ensures batch files are <2 GB before upload and is what drives automatic splitting.
+- `gemini.output_batch_dir`: where `batch_*.jsonl` lives; filters rewrite this under `output/filtered/gemini/<slug>/batches`.
+- `gemini.attribute_filters`: default per-stage filter; combine with YOLOE filters to process slices consistently.
 
-For every scene that contains at least one qualifying detection, **all images in that scene are sent** so Gemini sees full context.
+If you generated multiple filtered YOLOE runs you can either run `prepare-gemini` per slice or merge them first via [`json-utils merge-filtered yoloe`](#json-utilities).
 
-### 4. Submit Gemini jobs
-**Purpose**: upload batch files to GCS, create Vertex Gemini batch jobs, and persist job metadata for later commands.
-
+#### 3.2 Submit batches
 ```bash
 python -m privacy_pipeline.cli submit-gemini \
-  --batch-dir output/gemini/batches \
-  --gcs-bucket privacy-pipeline-inputs \
-  --gcs-output-bucket privacy-pipeline-outputs \
-  --gcs-output-prefix gemini_outputs \
+  output/gemini/batches \
+  --gcs-bucket my-input-bucket \
+  --gcs-output-bucket my-output-bucket \
   --project my-gcp-project \
   --location us-central1 \
   --model gemini-2.5-flash
 ```
 
+`submit-gemini` uploads each batch JSONL to Cloud Storage (creating buckets if needed) and starts  Vertex Batch jobs that link the uploaded file to your chosen Gemini Flash model. A `gemini_jobs.json` file is produced so the next steps can reference the job IDs and google cloud URIs (querying for the URIs to download files was not working, so the tool generates an output URI on job submission and saves it here as well).
+
 Key configuration fields:
-- `gcs_bucket`: uploads batches here (created automatically if missing).
-- `gcs_output_bucket` + `gcs_output_prefix`: where Vertex writes job results.
-- `project`, `location`, `model`: Vertex deployment you want to use.
-- `submitted_jobs_file`: JSON tracking job name + output URI (`output/gemini/gemini_jobs.json` or `output/filtered/gemini/<slug>/gemini_jobs.json`).
+- `gemini.gcs_bucket`: input bucket for batch files.
+- `gemini.project`, `gemini.location`, : Vertex project information.
+- `gemini.model`: The VLLM model to use. 
+- `gemini.submitted_jobs_file`: JSON file to keep track of submitted jobs. 
 
-### 5. Monitor batch status
-Check job health before downloading outputs. You can pass explicit job names or rely on the jobs file.
-
+#### 3.3 Check jobs
+Monitor job state before downloading results:
 ```bash
+python -m privacy_pipeline.cli check-gemini
+# or pass a file
 python -m privacy_pipeline.cli check-gemini --jobs-file output/gemini/gemini_jobs.json
+# or target specific job IDs
 python -m privacy_pipeline.cli check-gemini job-123 job-456 --project my-gcp-project
 ```
+The command uses the Vertex API to print JSON including `state`, `display_name`, and any `error` payload for jobs in the gemini_jobs.json (or provided) file. 
 
-The command prints JSON summaries (`state`, `display_name`, `error`, `output_uri`). Use this to wait until jobs reach `SUCCEEDED` before downloading.
-
-### 6. Download Gemini outputs
-Pull the JSON lines emitted by Vertex from the output bucket. Filenames are disambiguated by job name so reruns do not overwrite each other.
-
+#### 3.4 Download
 ```bash
 python -m privacy_pipeline.cli download-gemini \
   --jobs-file output/gemini/gemini_jobs.json \
   --output-dir output/gemini/gemini_outputs
 ```
+One Vertex job might emit multiple files (one per chunk). Downloading after everything succeeds gives you `prediction_<job>_<chunk>.jsonl` under `output/gemini/gemini_outputs/`.
 
-Downloaded files are typically named `prediction_<job>_<chunk>.jsonl`.
-
-### 7. Clean and merge Gemini logs
-**Purpose**: remove inline image payloads, extract `#FLAG[...]` markers, attach attributes from the original index, and emit a lean JSONL for analysis.
-
+#### 3.5 Clean & merge
 ```bash
-python -m privacy_pipeline.cli clean-gemini \
-  --outputs-dir output/gemini/gemini_outputs \
-  --output output/gemini_output_cleaned.jsonl \
-  --original-index output/image_index.jsonl
+python -m privacy_pipeline.cli clean-gemini
 ```
 
-What happens here:
-- `response_text` captures Gemini’s combined text / explanation.
-- `flag_categories` is derived from the categories listed inside `#FLAG[...]`.
-- `scene_path` and `attributes` come from the original index (respecting attribute filters if provided).
-- `is_flagged` is set when a `#FLAG` marker exists.
+Cleaning reads the downloaded JSONL chunks, removes inline image payloads, extracts the `#FLAG[...]` markers added by Gemini, and merges everything into a compact JSONL that includes:
+- `scene_path` plus the original scene attributes (matched using the index and respecting any filters)
+- `response_text`: the full gemini output.
+- `flag_categories`: comma-separated categories normalized into a list for filtering
+- `is_flagged`: a boolean for dashboards/statistics
 
-The cleaned JSONL is the primary input for the Gemini explorer notebook and any downstream metrics.
+## Configuration Reference
+Copy `config/config.example.yaml` to `config/config.yaml` and adjust the following keys:
 
-### 8. Inspect results
-Options once the cleaned files exist:
-- **Visualization notebooks**:
-  - `notebooks/yoloe_stage_explorer.ipynb`: Filter detections by attribute/class/confidence, visualize Plotly bar charts (class distribution, stacked attribute breakdowns, confidence histograms), and preview sample detections or per-scene galleries. All inputs respect the same widgets so what you see in charts mirrors the preview rows.
-  - `notebooks/gemini_stage_explorer.ipynb`: Work with cleaned OCR outputs. Widgets cover attributes, flag categories, scene status, and keyword searches. The notebook provides totals, category charts, stacked bar views by any attribute, a scene table, and a detail pane that shows Gemini’s response text plus inline thumbnails for the first few images in that scene (if the index is available). Previous/Next buttons help analysts page through scenes without re-running filters.
-- **JSON utilities** (`python -m privacy_pipeline.cli json-utils ...`):
-  - `list-values`: list unique attribute values across one or more JSONL files.
-  - `summarize`: count how many records fall into each attribute bucket and how filters would partition them.
-  - `merge-filtered`: combine outputs from `output/filtered/<stage>/<slug>` back into a single JSONL when you have run multiple attribute slices independently.
+**Dataset**
+- `image_root`: root directory to scan. Overridable via `index` positional argument.
+- `recursive`: crawl subfolders (default `true`).
+- `scene_grouping_level`: how many directories up count as a scene (1 for direct parent, etc.)
+- `path_attributes`: ordered names extracted from directories under `image_root`.
+- `path_attribute_map`: Gives you more control over which attributes come from which path sections (can skip certain folder levels)
+- `user_jsonl`: JSONL of `{ "image_path": ..., "attributes": { ... } }` to merge (if you have some other custom metadata).
+- `output_jsonl`: destination for the index (default `output/image_index.jsonl`).
 
-You can keep defaults for these utilities inside `config/json_utils.config.yaml` so analysts run short commands such as `python -m privacy_pipeline.cli json-utils summarize`.
+**YOLOE**
+- `model_path`: checkpoint file (downloaded into `models/` if missing). Should be a variant of yoloe-11-seg.
+- `threshold`: detection confidence cutoff.
+- `visualize`: whether or not to render visualizations for detections.
+- `visualization_dir`: where to save renderings.
+- `output_jsonl`: base detections file.
+- `attribute_filters`: default filter dictionary for repeated filtered runs.
 
----
+**Gemini**
+- `prompt`: Prompt to describe how Gemini should combine OCR text and flag categories.
+- `classes_to_forward`: YOLOE class names to forward.
+- `min_confidence`: detection threshold to forward a scene.
+- `max_batch_size_bytes`: caps `batch_*.jsonl` before upload (1.85 GB has been working for me).
+- `output_batch_dir`: local staging folder for JSONL requests.
+- `gcs_bucket`: where requests are uploaded.
+- `gcs_output_bucket`/`gcs_output_prefix`: location for Vertex responses.
+- `project`, `location`, `model`: Vertex deployment parameters (Gemini Flash only at the moment).
+- `submitted_jobs_file`: JSON record of submitted jobs; reused by check/download steps.
+- `final_output_jsonl`: destination for the cleaned/merged output (used by `clean-gemini`).
+- `attribute_filters`: filter dictionary shared by `prepare`, `clean`, and the other Gemini sub-commands.
 
-## Configuration Files
-Copy the exhaustive example to get started:
-```bash
-cp config/config.example.yaml config/config.yaml
-cp config/json_utils.config.example.yaml config/json_utils.config.yaml
-```
+`config/json_utils.config.example.yaml` holds defaults for the helper commands documented below.
 
-Example `config/config.yaml` (trimmed):
-```yaml
-dataset:
-  image_root: /data/images
-  recursive: true
-  scene_grouping_level: 2
-  path_attributes: [lab, building, scene]
-  path_attribute_map: {lab: 3, building: 2, scene: 1}
-  user_jsonl: data/manual_annotations.jsonl
-  output_jsonl: output/image_index.jsonl
+## JSON Utilities
+`python -m privacy_pipeline.cli json-utils ...` exposes lightweight helpers for working with JSONL outputs. They respect `config/json_utils.config.yaml` so they can be run without extra flags (or you can pass in arguments through the cli)
 
-yoloe:
-  model_path: models/yoloe-11l-seg.pt
-  threshold: 0.5
-  visualize: true
-  visualization_dir: output/visualizations/yoloe
-  output_jsonl: output/yoloe_output.jsonl
-  attribute_filters: {lab: alpha}
+- `list-values`: report all unique values for select attributes. Helpful before choosing filters.
+  ```bash
+  python -m privacy_pipeline.cli json-utils list-values output/image_index.jsonl --attributes lab building
+  ```
+- `summarize`: count how many rows fall into each attribute bucket and how proposed filters would split the work.
+  ```bash
+  python -m privacy_pipeline.cli json-utils summarize output/yoloe_output.jsonl --attributes lab building --filter lab=alpha --filter lab=beta
+  ```
+- `merge-filtered`: stitch together outputs from runs that used `--attribute-filter`, primarily for the heavy YOLOE and Gemini stages.
+  ```bash
+  python -m privacy_pipeline.cli json-utils merge-filtered yoloe --base-dir output/filtered --output output/yoloe_output_merged.jsonl
+  ```
 
-gemini:
-  prompt: |
-    Analyze the following images from the same scene...
-  classes_to_forward: [person, screen]
-  min_confidence: 0.5
-  max_batch_size_bytes: 1981808640
-  output_batch_dir: output/gemini/batches
-  gcs_bucket: privacy-pipeline-inputs
-  gcs_output_bucket: privacy-pipeline-outputs
-  gcs_output_prefix: gemini_outputs
-  project: my-gcp-project
-  location: us-central1
-  model: gemini-2.5-flash
-  submitted_jobs_file: output/gemini/gemini_jobs.json
-  final_output_jsonl: output/gemini_output.jsonl
-```
+Because filters are meant to enable parallel processing (especially of YOLOE), the merge command is the bridge that lets you re-connect a complete dataset when you have multiple filtered slices sitting under `output/filtered/<stage>/`.
 
-Any CLI flag overrides the YAML value for that run. Attribute filters automatically relocate outputs to `output/filtered/<stage>/<filter-slug>` and log files to `logs/<command>_<slug>.log`.
+## Visualization Notebooks
+Two notebooks in the [`notebooks/`](notebooks) folder make it easy to validate detections and OCR outputs once the CLI produces the JSONLs described above:
 
-For JSON utilities, store defaults separately:
-```yaml
-list_values:
-  inputs: [output/image_index.jsonl]
-  attributes: [lab, building]
+- `notebooks/yoloe_stage_explorer.ipynb`: loads `output/yoloe_output.jsonl` plus any filtered variants, provides widget-based filters for attributes/classes/confidence, renders Plotly summaries, and previews images with bounding boxes (if `visualize` was enabled). Use it whenever you need to tune thresholds or confirm a filter before running Gemini.
+- `notebooks/gemini_stage_explorer.ipynb`: ingests `output/gemini_output_cleaned.jsonl` (or merged filtered outputs) and faceted charts by attribute, scene, and `flag_categories`. It also displays Gemini's combined text along with thumbnails drawn from the original index, so it's easy to see what the model decided for each scene. The notebook works after the [cleaning step](#35-clean--merge) because that is where the inline payloads are stripped and scenes inherit their attributes.
 
-summarize:
-  inputs: [output/yoloe_output.jsonl]
-  attributes: [lab, building]
-  filters:
-    - lab=alpha
-    - {lab: alpha, building: west}
-
-merge_filtered:
-  stage: yoloe
-  base_dir: output/filtered
-  output: output/merged_yoloe_output.jsonl
-```
-
----
-
-## Outputs, Logs, and Artifacts
-- `output/`: canonical location for stage JSONLs (`image_index.jsonl`, `yoloe_output.jsonl`, `gemini_output.jsonl`, `gemini_output_cleaned.jsonl`).
-- `output/visualizations/yoloe/`: optional overlay PNGs mirroring the original directory structure.
-- `output/gemini/`: contains `batches/`, `gemini_jobs.json`, `gemini_outputs/`, and cleaned exports. Filter-specific runs mirror this structure under `output/filtered/gemini/<slug>/`.
-- `models/`: YOLOE checkpoints plus auto-generated custom weights (`*-custom.pt`). The latest `logs/yoloe_custom_mapping.txt` mirrors the detector's class order so you can interpret detections later.
-- `logs/`: every CLI run logs to `logs/<command>.log`, or `logs/<command>_<filter-slug>.log` when filters are in play.
-
-Always keep the index and cleaned outputs under version control or archival storage if you need to reproduce findings later.
-
----
-
-## Troubleshooting & Tips
-- **Missing config**: pass `--config path/to/config.yaml` explicitly if your file lives elsewhere or if you are running JSON utilities with a different config.
-- **Scene previews in notebooks**: the Gemini explorer shows thumbnails only when the original index path is reachable from the notebook environment.
-- **Filtered runs**: use `--attribute-filter name=value` for YOLOE, `prepare-gemini`, or `clean-gemini` to analyze subsets independently. Merge them later via `json-utils merge-filtered`.
-- **Batch sizing**: reduce `max_batch_size_bytes` if you hit Vertex upload quota or increase it (within platform limits) to reduce job count.
-- **Credentials**: ensure `GOOGLE_APPLICATION_CREDENTIALS` or `gcloud auth application-default login` is configured before submitting/checking/downloading Gemini jobs.
-
-With these steps, the data-privacy-tool can screen entire datasets end-to-end, surface sensitive artifacts, and provide human analysts with the charts and notebooks they need to make informed release decisions.
+Start both notebooks with `uv run jupyter lab` (or your preferred Jupyter launcher) after completing the stages in [Pipeline Steps](#pipeline-steps).

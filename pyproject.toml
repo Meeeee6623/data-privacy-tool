@@ -1,7 +1,7 @@
 [project]
 name = "data-privacy-tool"
 version = "0.1.0"
-description = "Add your description here"
+description = "A tool for detecting privacy leaks in large datasets"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
